@@ -1,0 +1,165 @@
+name: CI
+run-name: CI for ${{ github.repository }} on ${{ github.ref_name }}
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    types: 
+      - opened
+      - synchronize
+      - reopened
+      - edited
+    branches: 
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    name: Build, Lint, Test, Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: >
+      (
+        github.event_name != 'pull_request' ||
+        (
+          github.event.pull_request.draft == false &&
+          !contains(github.event.pull_request.title, 'WIP') &&
+          !contains(github.event.pull_request.title, 'Work in progress') &&
+          !contains(github.event.pull_request.title, '🚧')
+        )
+      )
+
+    env:
+      NODE_OPTIONS: --max-old-space-size=4096
+
+    outputs:
+      coverage_generated: ${{ steps.coverage_check.outputs.coverage_generated }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Build application and start
+        run: npm run build:start
+
+      - name: Run tests with coverage
+        run: npm run test:coverage
+
+      - name: TypeScript type check
+        run: npx tsc --noEmit
+
+      - name: Check outdated dependencies
+        run: |
+          echo "Checking for outdated dependencies..."
+          OUTDATED=$(npm outdated --json || true)
+
+          if [ -n "$OUTDATED" ] && [ "$OUTDATED" != "{}" ]; then
+            echo "Outdated dependencies detected:"
+            echo "$OUTDATED"
+          else
+            echo "All dependencies are up to date."
+          fi
+
+      - name: Check if coverage file exists
+        id: coverage_check
+        run: |
+          if [ -f coverage/lcov.info ]; then
+            echo "coverage_generated=true" >> $GITHUB_OUTPUT
+          else
+            echo "coverage_generated=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload coverage artifacts
+        if: steps.coverage_check.outputs.coverage_generated == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-reports
+          path: coverage/
+
+  pr-coverage-comment:
+    name: PR Coverage Summary
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && needs.build.outputs.coverage_generated == 'true'
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage/
+
+      - name: Generate coverage summary
+        uses: irongut/CodeCoverageSummary@v1.3.0
+        with:
+          filename: coverage/cobertura-coverage.xml
+          badge: true
+          format: markdown
+          output: both
+          indicators: true
+
+      - name: Post PR coverage comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "pr-coverage-summary"
+          recreate: true
+          path: code-coverage-results.md
+
+  codecov-upload:
+    name: Upload Coverage to Codecov
+    needs: build
+    runs-on: ubuntu-latest
+    if: >
+      needs.build.outputs.coverage_generated == 'true' &&
+      (
+        github.event_name != 'pull_request' ||
+        (
+          !contains(github.event.pull_request.title, 'WIP') &&
+          !contains(github.event.pull_request.title, 'Work in progress') &&
+          !contains(github.event.pull_request.title, '🚧') &&
+          !contains(github.event.pull_request.title, '!COV')
+        )
+      )
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Download coverage artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-reports
+          path: coverage/
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage/lcov.info
+          flags: unittests
+          name: codecov-coverage-report

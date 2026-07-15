@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Readme
+    url: https://github.com/catbee-technologies/catbee-mysql#readme
+    about: Check the README for more information about the project.
+  - name: Documentation
+    url: https://catbee.in/docs/@catbee/mysql/intro
+    about: Find in-depth information about using catbee-mysql in the docs.
+  - name: Discussions
+    url: https://github.com/catbee-technologies/catbee-mysql/discussions
+    about: Ask questions or start a discussion here.
+  - name: Security Policy
+    url: https://github.com/catbee-technologies/catbee-mysql/security/policy
+    about: Report security vulnerabilities responsibly here.

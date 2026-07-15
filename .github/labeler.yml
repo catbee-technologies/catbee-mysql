@@ -1,0 +1,73 @@
+# Branch based labels
+feat:
+  - head-branch:
+    - "^feat/"
+
+feature:
+  - head-branch:
+    - "^feature/"
+
+hotfix:
+  - head-branch:
+    - "^hotfix/"
+
+fix:
+  - head-branch:
+    - "^fix/"
+
+refactor:
+  - head-branch:
+    - "^refactor/"
+
+chore:
+  - head-branch:
+    - "^chore/"
+
+security:
+  - head-branch:
+    - "^security/"
+
+# Folder based labels
+
+test:
+  - changed-files:
+      - any-glob-to-any-file: 'tests/**'
+  - head-branch:
+      - "^test/"
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file: ".github/workflows/**"
+  - head-branch:
+    - "^ci/"
+
+utils:
+  - changed-files:
+      - any-glob-to-any-file: 'src/utils/**'
+
+config:
+  - changed-files:
+      - any-glob-to-any-file: '*.config.js'
+      - any-glob-to-any-file: '*.config.mjs'
+      - any-glob-to-any-file: '*.config.ts'
+
+types:
+  - changed-files:
+      - any-glob-to-any-file: 'src/types/**'
+
+readme:
+  - changed-files:
+      - any-glob-to-any-file: 'README.md'
+
+changelog:
+  - changed-files:
+      - any-glob-to-any-file: 'CHANGELOG.md'
+
+dependency:
+  - changed-files:
+      - any-glob-to-any-file: 'package.json'
+      - any-glob-to-any-file: 'package-lock.json'
+
+scripts:
+  - changed-files:
+      - any-glob-to-any-file: 'scripts/**'

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "group:monorepos"],
+  "onboarding": true,
+  "onboardingConfig": {
+    "extends": ["config:recommended"]
+  },
+  "timezone": "Asia/Kolkata",
+  "prHourlyLimit": 5,
+  "prConcurrentLimit": 5,
+  "packageRules": [
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "npm breaking updates"
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "npm non-breaking updates"
+    },
+    {
+      "groupName": "eslint packages",
+      "matchPackageNames": [
+        "^eslint", 
+        "^@eslint", 
+        "^@docusaurus/eslint-plugin", 
+        "^@typescript-eslint",
+        "^typescript-eslint", 
+        "eslint-.*", 
+        "eslint-plugin-.*"
+      ]
+    },
+    {
+      "groupName": "jest packages",
+      "matchPackageNames": ["^jest", "^ts-jest", "^jest-", "^@types/jest"]
+    },
+    {
+      "groupName": "catbee packages",
+      "matchPackageNames": ["^@catbee"]
+    },
+    {
+      "groupName": "ng catbee packages",
+      "matchPackageNames": ["^@ng-catbee"]
+    }
+  ],
+  "addLabels": ["dependency", "renovate"],
+  "reviewers": ["catbee-technologies/catbee-admins"],
+  "assignees": ["catbee-technologies/catbee-admins"],
+  "branchPrefix": "dependency/",
+  "rangeStrategy": "bump",
+  "rebaseWhen": "behind-base-branch",
+  "baseBranchPatterns": ["main"],
+  "dependencyDashboard": true,
+  "lockFileMaintenance": {
+    "enabled": true
+  },
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "commitMessageLowerCase": "auto",
+  "ignoreDeps": [],
+  "enabledManagers": ["npm"]
+}

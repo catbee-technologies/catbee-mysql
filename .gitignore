@@ -1,0 +1,9 @@
+node_modules/
+build/
+.env
+logs/
+*.log
+coverage/
+**/test-report.xml
+pack-output.json
+dist/
