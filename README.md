@@ -2,6 +2,27 @@
 
 A lightweight, type-safe MySQL client for Node.js with comprehensive transaction support, connection pooling, and a fluent query builder.
 
+<div style="display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1rem 0;">
+  <img src="https://github.com/catbee-technologies/catbee-mysql/actions/workflows/ci.yml/badge.svg?label=Build" alt="Build Status" />
+  <img src="https://codecov.io/gh/catbee-technologies/catbee-mysql/graph/badge.svg?token=XAJHK6R1OQ" alt="Coverage" />
+  <img src="https://img.shields.io/node/v/@catbee/mysql" alt="Node Version" />
+  <img src="https://img.shields.io/npm/v/@catbee/mysql" alt="NPM Version" />
+  <!-- <img src="https://img.shields.io/npm/v/@catbee/mysql/rc" alt="NPM RC Version" />
+  <img src="https://img.shields.io/npm/v/@catbee/mysql/next" alt="NPM Next Version" /> -->
+  <img src="https://img.shields.io/npm/dt/@catbee/mysql" alt="NPM Downloads" />
+  <img src="https://img.shields.io/npm/types/@catbee/mysql" alt="TypeScript Types" />
+  <img src="https://img.shields.io/maintenance/yes/2050" alt="Maintenance" />
+  <img src="https://snyk.io/test/github/catbee-technologies/catbee-mysql/badge.svg" alt="Snyk Vulnerabilities" />
+  <img src="https://sonarcloud.io/api/project_badges/measure?project=catbee-technologies_catbee-mysql&metric=alert_status&token=93da835f2d48d37b41fa628cc7fc764c873bd700" alt="Quality Gate Status" />
+  <img src="https://sonarcloud.io/api/project_badges/measure?project=catbee-technologies_catbee-mysql&metric=ncloc&token=93da835f2d48d37b41fa628cc7fc764c873bd700" alt="Lines of Code" />
+  <img src="https://sonarcloud.io/api/project_badges/measure?project=catbee-technologies_catbee-mysql&metric=security_rating&token=93da835f2d48d37b41fa628cc7fc764c873bd700" alt="Security Rating" />
+  <img src="https://sonarcloud.io/api/project_badges/measure?project=catbee-technologies_catbee-mysql&metric=sqale_rating&token=93da835f2d48d37b41fa628cc7fc764c873bd700" alt="Maintainability Rating" />
+  <img src="https://sonarcloud.io/api/project_badges/measure?project=catbee-technologies_catbee-mysql&metric=vulnerabilities&token=93da835f2d48d37b41fa628cc7fc764c873bd700" alt="Vulnerabilities" />
+  <img src="https://img.shields.io/npm/l/@catbee/mysql" alt="License" />
+</div>
+
+---
+
 ## Features
 
 - ✨ **Type-safe**: Full TypeScript support with proper typing for queries, results, and transactions
