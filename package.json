@@ -1,6 +1,6 @@
 {
   "name": "@catbee/mysql",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Production-ready, type-safe MySQL client for Node.js with transactions, pooling, query builder, and named parameters.",
   "type": "module",
   "sideEffects": false,
