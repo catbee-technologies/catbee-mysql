@@ -42,7 +42,7 @@
     "deps:update": "npx npm-check-updates -u --target latest && npm install"
   },
   "dependencies": {
-    "mysql2": "^3.22.6"
+    "mysql2": "^3.23.1"
   },
   "devDependencies": {
     "@commitlint/config-conventional": "^21.2.0",
