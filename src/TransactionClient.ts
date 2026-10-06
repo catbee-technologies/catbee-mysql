@@ -1,4 +1,5 @@
 import type { Connection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
+import type { ExecuteValues } from 'mysql2';
 import type { QueryResult_, QueryRows, SqlParameters, SqlTransaction } from './types';
 import { assertSupportedSqlParameters } from './SqlParameterValidation';
 
@@ -76,7 +77,7 @@ export class TransactionClient implements SqlTransaction {
   ): Promise<T> {
     this.assertActive();
     assertSupportedSqlParameters(parameters);
-    const result = await this.connection.execute<T>(sql, [...parameters]);
+    const result = await this.connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
     // Handle both array and tuple returns from mysql2/promise
     const executeResult = Array.isArray(result) ? result[0] : result;
     return executeResult as T;

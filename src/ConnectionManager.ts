@@ -1,4 +1,4 @@
-import type { ConnectionOptions } from 'mysql2';
+import type { ConnectionOptions, ExecuteValues } from 'mysql2';
 import { createConnection, createPool, type Connection, type Pool } from 'mysql2/promise';
 import type { PoolOptions, QueryResult_, QueryRows, SqlParameters } from './types';
 
@@ -87,13 +87,13 @@ export class ConnectionManager {
    */
   public async execute<T extends QueryResult_>(sql: string, parameters: SqlParameters): Promise<T> {
     if (this.isPooled) {
-      const result = await this.ensurePool().execute<T>(sql, [...parameters]);
+      const result = await this.ensurePool().execute<T>(sql, [...parameters] as unknown as ExecuteValues);
       const executeResult = Array.isArray(result) ? result[0] : result;
       return executeResult as T;
     }
 
     const connection = await this.getPrimaryConnection();
-    const result = await connection.execute<T>(sql, [...parameters]);
+    const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
     const executeResult = Array.isArray(result) ? result[0] : result;
     return executeResult as T;
   }
@@ -167,7 +167,7 @@ export class ConnectionManager {
       });
 
       try {
-        const result = await connection.execute<T>(sql, [...parameters]);
+        const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
         const executeResult = Array.isArray(result) ? result[0] : result;
         return executeResult as T;
       } finally {
@@ -185,7 +185,7 @@ export class ConnectionManager {
       }
     });
 
-    const result = await connection.execute<T>(sql, [...parameters]);
+    const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
     const executeResult = Array.isArray(result) ? result[0] : result;
     return executeResult as T;
   }

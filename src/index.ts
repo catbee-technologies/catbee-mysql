@@ -5,6 +5,8 @@ export { SqlClient } from './SqlClient';
 export type {
   SqlClientOptions,
   PoolOptions,
+  SqlScalar,
+  SqlScalarValue,
   SqlValue,
   SqlParameters,
   QueryExecutionOptions,

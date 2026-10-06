@@ -83,6 +83,10 @@ const user = await db.get('SELECT * FROM users WHERE id = ?', [1]);
 
 // Get all matching rows
 const activeUsers = await db.all('SELECT * FROM users WHERE active = ?', [true]);
+
+// IN clause queries (with array parameter)
+const roles = ['admin', 'moderator'];
+const staff = await db.query('SELECT * FROM users WHERE role IN (?)', [roles]);
 ```
 
 ### Execute Statements
@@ -91,11 +95,21 @@ const activeUsers = await db.all('SELECT * FROM users WHERE active = ?', [true])
 // Insert a user
 const insertedRows = await db.insert('INSERT INTO users(name, email) VALUES(?, ?)', ['Alice', 'alice@example.com']);
 
+// Bulk insert using 2D array and VALUES ?
+const newUsers = [
+  ['Alice', 'alice@example.com'],
+  ['Bob', 'bob@example.com'],
+];
+const bulkInserted = await db.insert('INSERT INTO users(name, email) VALUES ?', [newUsers]);
+
 // Update users
 const affectedRows = await db.update('UPDATE users SET active = ? WHERE id = ?', [true, 1]);
 
 // Delete users
 const deletedCount = await db.delete('DELETE FROM users WHERE id = ?', [1]);
+
+// Delete with IN clause parameters
+await db.delete('DELETE FROM users WHERE role IN (?, ?)', ['admin', 'editor']);
 ```
 
 ### Manual Transactions
@@ -292,6 +306,16 @@ Notes:
 - `operator` is one of `=`, `!=`, `>`, `>=`, `<`, `<=`, `LIKE`.
 - `join(type, ...)` supports `INNER`, `LEFT`, and `RIGHT`.
 - `whereIn`/`andIn`/`orIn`/`havingIn` require at least one value.
+
+### SQL Parameter Types
+
+- `SqlScalar` / `SqlScalarValue`: Primitive scalar SQL values (`string | number | boolean | Buffer | null`).
+- `SqlValue`: Supported SQL parameter value:
+  - Scalar SQL values (`string`, `number`, `boolean`, `Buffer`, `null`)
+  - 1D arrays of scalars (for `IN (?)` clauses or positional lists)
+  - 2D arrays of scalars (for bulk `INSERT ... VALUES ?` operations)
+  - Supports both mutable and `readonly` arrays
+- `SqlParameters`: Readonly array of parameter values (`readonly SqlValue[]`).
 
 ## Middleware
 
