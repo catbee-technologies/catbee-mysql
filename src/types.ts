@@ -1,17 +1,37 @@
 import type { ConnectionOptions, QueryResult, ResultSetHeader, RowDataPacket } from 'mysql2';
 
 /**
- * MySQL parameter type - can be string, number, boolean, Buffer, or null.
- * These are the safe types that can be parameterized in SQL queries.
+ * Primitive SQL scalar parameter value.
+ * Safe types that can be parameterized directly as individual values in SQL queries.
  *
  * @example
- * const userId: SqlValue = 123;
- * const name: SqlValue = 'Alice';
- * const isActive: SqlValue = true;
- * const payload: SqlValue = Buffer.from('hello');
- * const nullValue: SqlValue = null;
+ * const userId: SqlScalar = 123;
+ * const name: SqlScalar = 'Alice';
+ * const isActive: SqlScalar = true;
+ * const payload: SqlScalar = Buffer.from('hello');
+ * const nullValue: SqlScalar = null;
  */
-export type SqlValue = string | number | boolean | Buffer | null;
+export type SqlScalar = string | number | boolean | Buffer | null;
+
+/**
+ * Alias for SqlScalar representing single scalar SQL values.
+ */
+export type SqlScalarValue = SqlScalar;
+
+/**
+ * MySQL parameter value - supports:
+ * - scalar SQL values (string, number, boolean, Buffer, null)
+ * - 1D arrays of scalar SQL values (e.g. for IN clauses)
+ * - 2D arrays of scalar SQL values (e.g. for bulk INSERT ... VALUES ? operations)
+ *
+ * Supports both mutable and readonly arrays.
+ *
+ * @example
+ * const scalar: SqlValue = 'Alice';
+ * const inClause: SqlValue = ['WORKORDER', 'MONITORING'];
+ * const bulkInsert: SqlValue = [['uuid1', 'UK'], ['uuid2', 'US']];
+ */
+export type SqlValue = SqlScalar | readonly SqlScalar[] | readonly (readonly SqlScalar[])[];
 
 /**
  * SQL comparison clause keywords used in query building.
@@ -25,9 +45,20 @@ export type ComparisonClauseKeyword = 'WHERE' | 'AND' | 'OR' | 'HAVING';
 /**
  * Array of SQL parameter values.
  * Use readonly to prevent accidental mutation of query parameters.
+ * Supports scalar parameters, IN clause parameters, and 2D arrays for bulk operations.
  *
  * @example
- * const params: SqlParameters = [123, 'Alice', true];
+ * // Scalar parameters
+ * const params1: SqlParameters = [123, 'Alice', true];
+ *
+ * // IN clause parameters with single placeholder: WHERE type IN (?)
+ * const params2: SqlParameters = [['WORKORDER', 'MONITORING']];
+ *
+ * // IN clause parameters with multiple placeholders: WHERE type IN (?, ?)
+ * const params3: SqlParameters = ['WORKORDER', 'MONITORING'];
+ *
+ * // Bulk insert: INSERT INTO tbl VALUES ?
+ * const params4: SqlParameters = [[['uuid1', 'UK'], ['uuid2', 'US']]];
  */
 export type SqlParameters = readonly SqlValue[];
 
