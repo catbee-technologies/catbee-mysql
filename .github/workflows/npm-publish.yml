@@ -1,5 +1,5 @@
 name: Publish Package
-run-name: Publish package for ${{ github.repository }} on ${{ github.ref_name }}
+run-name: "Publish: ${{ github.event.client_payload.tag || 'manual release' }}"
 
 on:
   repository_dispatch:
@@ -39,6 +39,7 @@ jobs:
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Install dependencies
         run: npm ci
@@ -59,8 +60,6 @@ jobs:
           "
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           version=$(jq -r '.version' package.json)
           cd dist

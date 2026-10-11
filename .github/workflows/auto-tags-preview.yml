@@ -1,5 +1,5 @@
 name: Preview Tag
-run-name: Preview tag for ${{ github.repository }} on ${{ github.ref_name }}
+run-name: "Preview Tag: ${{ github.ref_name }}"
 
 on:
   push:

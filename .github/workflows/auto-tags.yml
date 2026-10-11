@@ -1,5 +1,5 @@
 name: Tag
-run-name: Tag for ${{ github.repository }} on ${{ github.ref_name }}
+run-name: "Tag: ${{ github.ref_name }}"
 
 on:
   push:
