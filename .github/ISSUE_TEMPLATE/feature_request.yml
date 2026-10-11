@@ -1,7 +1,7 @@
 name: Feature Request
 description: Suggest an idea or improvement.
-title: "[Feature]: "
-labels: ["enhancement", "feature-request", "improvement"]
+title: '[Feature]: '
+labels: ['enhancement', 'feature-request', 'improvement']
 body:
   - type: markdown
     attributes:
@@ -27,7 +27,7 @@ body:
     attributes:
       label: Affected Package(s)
       options:
-        - "@catbee/mysql"
+        - '@catbee/mysql'
       multiple: true
     validations:
       required: true
@@ -37,35 +37,17 @@ body:
     attributes:
       label: Affected Module(s)
       options:
-        - "All Modules"
-        - "Array Utilities"
-        - "Async Utilities"
-        - "Cache Utilities"
-        - "Context Store Utilities"
-        - "Crypto Utilities"
-        - "Date Utilities"
-        - "Decorator Utilities"
-        - "Directory Utilities"
-        - "Env Utilities"
-        - "Exception Utilities"
-        - "File System Utilities"
-        - "Http Status Code Utilities"
-        - "ID Utilities"
-        - "Logger Utilities"
-        - "Middleware Utilities"
-        - "Object Utilities"
-        - "Performance Utilities"
-        - "Request Utilities"
-        - "Response Utilities"
-        - "Stream Utilities"
-        - "String Utilities"
-        - "Type Utilities"
-        - "URL Utilities"
-        - "Validation Utilities"
-        - "Express Server"
-        - "Express Server Builder"
-        - "Config"
-        - "Other"
+        - 'All Modules'
+        - 'SqlClient (Core Client & Query Execution)'
+        - 'ConnectionManager (Connection Pooling & Lifecycle)'
+        - 'TransactionClient (Transactions & Savepoints)'
+        - 'QueryBuilder (Fluent SQL Builder)'
+        - 'NamedParameters (Named Parameter Compiler)'
+        - 'DateUtils (Date & Time / UTC Handling)'
+        - 'Middleware & Events (db.use & EventEmitter)'
+        - 'Parameter Validation & Sanitization'
+        - 'TypeScript Types'
+        - 'Other'
       multiple: true
     validations:
       required: true
@@ -75,7 +57,7 @@ body:
     attributes:
       label: Feature Summary
       description: A short, clear summary of the requested feature.
-      placeholder: e.g. Add support for X in Y module.
+      placeholder: e.g., Add support for CTEs (WITH queries) in QueryBuilder or read replica routing in SqlClient.
     validations:
       required: true
 
@@ -85,7 +67,7 @@ body:
       label: Problem Statement (Optional)
       description: Is your feature request related to a problem?
       placeholder: |
-        Explain the issue you're facing that this feature would solve.
+        Explain the issue or limitation you're facing that this feature would solve.
     validations:
       required: false
 
@@ -93,9 +75,13 @@ body:
     id: solution
     attributes:
       label: Proposed Solution
-      description: How should this work? Provide detailed behavior if possible.
+      description: How should this work? Provide detailed behavior or API design if possible.
       placeholder: |
-        Describe the approach or API you’d like to see.
+        Describe the approach or API you’d like to see. Include TypeScript/SQL code snippets where applicable:
+
+        ```ts
+        // Example proposed usage
+        ```
     validations:
       required: true
 
@@ -107,7 +93,7 @@ body:
       placeholder: |
         - As a developer, I want ...
         - This enables ...
-        - This improves ...
+        - This improves query performance / developer ergonomics ...
     validations:
       required: true
 
