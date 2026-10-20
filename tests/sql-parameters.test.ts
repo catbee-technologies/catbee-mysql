@@ -1,4 +1,4 @@
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
+import type { FieldPacket, QueryOptions, QueryResult, ResultSetHeader, RowDataPacket } from 'mysql2';
 import { createConnection, type Connection } from 'mysql2/promise';
 import {
   SqlClient,
@@ -207,7 +207,7 @@ describe('SQL Parameter Typing and Validation', () => {
   describe('Bulk INSERT ... VALUES ?', () => {
     it('supports 2D array for bulk insert', async () => {
       const header = { affectedRows: 2, insertId: 100 } as ResultSetHeader;
-      primaryConnection.execute.mockResolvedValue([header, []]);
+      primaryConnection.query.mockResolvedValue([header, []]);
 
       const values = [
         ['uuid1', 'UK', 'app', '{}'],
@@ -220,7 +220,7 @@ describe('SQL Parameter Typing and Validation', () => {
       );
 
       expect(affected).toBe(2);
-      expect(primaryConnection.execute).toHaveBeenCalledWith(
+      expect(primaryConnection.query).toHaveBeenCalledWith(
         'INSERT INTO psx_configurations (uuid, territory, createdBy, data) VALUES ?',
         [values]
       );
@@ -228,7 +228,7 @@ describe('SQL Parameter Typing and Validation', () => {
 
     it('supports mixed scalar types in 2D array rows', async () => {
       const header = { affectedRows: 2, insertId: 1 } as ResultSetHeader;
-      primaryConnection.execute.mockResolvedValue([header, []]);
+      primaryConnection.query.mockResolvedValue([header, []]);
 
       const rows: [string, number, boolean, Buffer, null][] = [
         ['uuid1', 10, true, Buffer.from('a'), null],
@@ -241,7 +241,7 @@ describe('SQL Parameter Typing and Validation', () => {
       );
 
       expect(affected).toBe(2);
-      expect(primaryConnection.execute).toHaveBeenCalledWith(
+      expect(primaryConnection.query).toHaveBeenCalledWith(
         'INSERT INTO complex_table (uuid, count, is_ready, payload, extra) VALUES ?',
         [rows]
       );
@@ -273,7 +273,7 @@ describe('SQL Parameter Typing and Validation', () => {
 
     it('supports readonly 2D arrays for bulk insert', async () => {
       const header = { affectedRows: 2, insertId: 10 } as ResultSetHeader;
-      primaryConnection.execute.mockResolvedValue([header, []]);
+      primaryConnection.query.mockResolvedValue([header, []]);
 
       const readonlyValues: readonly (readonly string[])[] = [
         ['uuid1', 'UK', 'app', '{}'],
@@ -286,7 +286,7 @@ describe('SQL Parameter Typing and Validation', () => {
       );
 
       expect(affected).toBe(2);
-      expect(primaryConnection.execute).toHaveBeenCalledWith(
+      expect(primaryConnection.query).toHaveBeenCalledWith(
         'INSERT INTO psx_configurations (uuid, territory, createdBy, data) VALUES ?',
         [readonlyValues]
       );
@@ -294,7 +294,7 @@ describe('SQL Parameter Typing and Validation', () => {
 
     it('supports "as const" 2D array for bulk insert', async () => {
       const header = { affectedRows: 2, insertId: 10 } as ResultSetHeader;
-      primaryConnection.execute.mockResolvedValue([header, []]);
+      primaryConnection.query.mockResolvedValue([header, []]);
 
       const constValues = [
         ['uuid1', 'UK'],
@@ -304,7 +304,7 @@ describe('SQL Parameter Typing and Validation', () => {
       const affected = await client.insert('INSERT INTO psx_configurations (uuid, territory) VALUES ?', [constValues]);
 
       expect(affected).toBe(2);
-      expect(primaryConnection.execute).toHaveBeenCalledWith(
+      expect(primaryConnection.query).toHaveBeenCalledWith(
         'INSERT INTO psx_configurations (uuid, territory) VALUES ?',
         [constValues]
       );
@@ -346,8 +346,12 @@ describe('SQL Parameter Typing and Validation', () => {
     it('accepts bulk insert and IN clause parameters in SqlTransaction', async () => {
       const header = { affectedRows: 2, insertId: 50 } as ResultSetHeader;
       const rows = [{ id: 1 }] as RowDataPacket[];
-      primaryConnection.execute.mockResolvedValue([header, []]);
-      primaryConnection.query.mockResolvedValue([rows, []]);
+      primaryConnection.execute.mockResolvedValue([header, [] as FieldPacket[]]);
+      primaryConnection.query.mockImplementation(async (sqlOrOptions: string | QueryOptions) => {
+        const sql = typeof sqlOrOptions === 'string' ? sqlOrOptions : sqlOrOptions.sql;
+        const result: QueryResult = sql.includes('INSERT') ? header : rows;
+        return [result, [] as FieldPacket[]];
+      });
 
       const tx: SqlTransaction = await client.startTransaction();
 

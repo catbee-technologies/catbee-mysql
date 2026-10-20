@@ -45,3 +45,12 @@ export function assertSupportedSqlParameters(parameters: SqlParameters): void {
     );
   }
 }
+
+/**
+ * Detects whether any SQL parameter is a non-empty 2D array (e.g. `[[row1], [row2]]` for `VALUES ?`).
+ * MySQL prepared statements (`connection.execute`) reject `VALUES ?` with 2D arrays,
+ * so queries with 2D array parameters must be dispatched via `connection.query`.
+ */
+export function has2DArrayParameter(parameters: SqlParameters): boolean {
+  return parameters.some(p => Array.isArray(p) && p.length > 0 && Array.isArray((p as unknown[])[0]));
+}

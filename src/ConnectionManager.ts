@@ -1,6 +1,7 @@
-import type { ConnectionOptions, ExecuteValues } from 'mysql2';
+import type { ConnectionOptions, ExecuteValues, QueryValues } from 'mysql2';
 import { createConnection, createPool, type Connection, type Pool } from 'mysql2/promise';
 import type { PoolOptions, QueryResult_, QueryRows, SqlParameters } from './types';
+import { has2DArrayParameter } from './SqlParameterValidation';
 
 /**
  * Internal connection management class that handles both single connections
@@ -93,15 +94,20 @@ export class ConnectionManager {
    * connections automatically.
    */
   public async execute<T extends QueryResult_>(sql: string, parameters: SqlParameters): Promise<T> {
+    const is2D = has2DArrayParameter(parameters);
     if (this.isPooled) {
-      const result = await this.ensurePool().execute<T>(sql, [...parameters] as unknown as ExecuteValues);
+      const result = is2D
+        ? await this.ensurePool().query<T>(sql, [...parameters] as unknown as QueryValues)
+        : await this.ensurePool().execute<T>(sql, [...parameters] as unknown as ExecuteValues);
       const executeResult = Array.isArray(result) ? result[0] : result;
       return executeResult as T;
     }
 
     const connection = await this.getPrimaryConnection();
     try {
-      const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
+      const result = is2D
+        ? await connection.query<T>(sql, [...parameters] as unknown as QueryValues)
+        : await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
       const executeResult = Array.isArray(result) ? result[0] : result;
       return executeResult as T;
     } catch (error) {
@@ -170,6 +176,7 @@ export class ConnectionManager {
     parameters: SqlParameters,
     registerCancel: (cancel: () => void) => void
   ): Promise<T> {
+    const is2D = has2DArrayParameter(parameters);
     if (this.isPooled) {
       const connection = await this.ensurePool().getConnection();
       let canceled = false;
@@ -179,7 +186,9 @@ export class ConnectionManager {
       });
 
       try {
-        const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
+        const result = is2D
+          ? await connection.query<T>(sql, [...parameters] as unknown as QueryValues)
+          : await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
         const executeResult = Array.isArray(result) ? result[0] : result;
         return executeResult as T;
       } finally {
@@ -195,7 +204,9 @@ export class ConnectionManager {
       this.invalidatePrimaryConnection(connection);
     });
 
-    const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
+    const result = is2D
+      ? await connection.query<T>(sql, [...parameters] as unknown as QueryValues)
+      : await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
     const executeResult = Array.isArray(result) ? result[0] : result;
     return executeResult as T;
   }
@@ -335,7 +346,7 @@ export class ConnectionManager {
 
   private attachConnectionErrorHandler(connection: Connection): void {
     const emitter = connection as unknown as {
-      on?: (event: string, listener: (...args: any[]) => void) => void;
+      on?: (event: string, listener: (...args: unknown[]) => void) => void;
     };
 
     if (typeof emitter.on === 'function') {
