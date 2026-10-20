@@ -479,9 +479,10 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    */
   public async get<T extends RowDataPacket = RowDataPacket>(
     sql: string,
-    parameters: SqlParameters = []
+    parameters: SqlParameters = [],
+    options: QueryExecutionOptions = {}
   ): Promise<T | null> {
-    const rows = await this.queryRaw<T[]>(sql, parameters);
+    const rows = await this.queryRaw<T[]>(sql, parameters, options);
     if (rows.length > 1) throw new Error('get() returned more than one row');
     return rows.length === 1 ? rows[0] : null;
   }
@@ -494,6 +495,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    * @template T - The row type (default: RowDataPacket)
    * @param sql - The SELECT query string
    * @param parameters - Parameter values (default: [])
+   * @param options - Execution options
    * @returns Promise resolving to an array of rows (empty array if none found)
    * @throws Error if the query fails
    *
@@ -518,8 +520,12 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    *   []
    * );
    */
-  public async all<T extends RowDataPacket = RowDataPacket>(sql: string, parameters: SqlParameters = []): Promise<T[]> {
-    return this.queryRaw<T[]>(sql, parameters);
+  public async all<T extends RowDataPacket = RowDataPacket>(
+    sql: string,
+    parameters: SqlParameters = [],
+    options: QueryExecutionOptions = {}
+  ): Promise<T[]> {
+    return this.queryRaw<T[]>(sql, parameters, options);
   }
 
   /**
@@ -529,6 +535,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    *
    * @param sql - The INSERT statement
    * @param parameters - Parameter values (default: [])
+   * @param options - Execution options
    * @returns Promise resolving to the number of affected rows
    * @throws Error if the insert fails
    *
@@ -540,8 +547,12 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    * );
    * console.log(`Inserted ${affectedRows} row(s)`);
    */
-  public async insert(sql: string, parameters: SqlParameters = []): Promise<number> {
-    const result = await this.executeRaw<ResultSetHeader>(sql, parameters);
+  public async insert(
+    sql: string,
+    parameters: SqlParameters = [],
+    options: QueryExecutionOptions = {}
+  ): Promise<number> {
+    const result = await this.executeRaw<ResultSetHeader>(sql, parameters, options);
     return result.affectedRows;
   }
 
@@ -555,6 +566,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    * @param sql - The UPDATE statement
    * @param parameters - Parameter values (default: [])
    * @param returnChangedRows - If true, return changedRows instead of affectedRows (default: false)
+   * @param options - Execution options
    * @returns Promise resolving to the affected or changed rows count
    * @throws Error if the update fails
    *
@@ -582,8 +594,13 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    *   [1.1, 'electronics']
    * );
    */
-  public async update(sql: string, parameters: SqlParameters = [], returnChangedRows = false): Promise<number> {
-    const result = await this.executeRaw<ResultSetHeader>(sql, parameters);
+  public async update(
+    sql: string,
+    parameters: SqlParameters = [],
+    returnChangedRows = false,
+    options: QueryExecutionOptions = {}
+  ): Promise<number> {
+    const result = await this.executeRaw<ResultSetHeader>(sql, parameters, options);
     return returnChangedRows ? result?.changedRows : result.affectedRows;
   }
 
@@ -595,6 +612,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    *
    * @param sql - The DELETE statement
    * @param parameters - Parameter values (default: [])
+   * @param options - Execution options
    * @returns Promise resolving to the number of deleted rows
    * @throws Error if the delete fails
    *
@@ -610,12 +628,16 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    * // Bulk delete with condition
    * const archivedCount = await db.delete(
    *   'DELETE FROM logs WHERE created_at < ?',
-   *   [new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)] // 30 days ago
+   *   [formatDateForMysql(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000))] // 30 days ago
    * );
    * console.log(`Deleted ${archivedCount} old log entries`);
    */
-  public async delete(sql: string, parameters: SqlParameters = []): Promise<number> {
-    const result = await this.executeRaw<ResultSetHeader>(sql, parameters);
+  public async delete(
+    sql: string,
+    parameters: SqlParameters = [],
+    options: QueryExecutionOptions = {}
+  ): Promise<number> {
+    const result = await this.executeRaw<ResultSetHeader>(sql, parameters, options);
     return result.affectedRows;
   }
 
@@ -970,6 +992,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
           throw error;
         }
 
+        this.connectionManager.invalidatePrimaryConnection();
         attempt += 1;
         await this.delay(this.getRetryDelayMs(attempt));
       }
@@ -1034,6 +1057,10 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
       };
 
       if (signal) {
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
         signal.addEventListener('abort', onAbort, { once: true });
       }
 
@@ -1160,7 +1187,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    */
   private assertExecuteStatement(sql: string): void {
     const leadingKeyword = this.getLeadingSqlKeyword(sql);
-    if (leadingKeyword === 'SELECT') {
+    if (leadingKeyword === 'SELECT' || leadingKeyword === 'WITH') {
       throw new Error('execute() does not support SELECT queries. Use query() instead.');
     }
   }
@@ -1170,7 +1197,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    */
   private assertQueryStatement(sql: string): void {
     const leadingKeyword = this.getLeadingSqlKeyword(sql);
-    if (leadingKeyword && leadingKeyword !== 'SELECT') {
+    if (leadingKeyword && leadingKeyword !== 'SELECT' && leadingKeyword !== 'WITH') {
       throw new Error('query() supports SELECT queries only. Use execute() or raw() instead.');
     }
   }

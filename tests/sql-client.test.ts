@@ -162,6 +162,29 @@ describe('SqlClient', () => {
       expect(primaryConnection.query).not.toHaveBeenCalled();
     });
 
+    it('supports CTE queries with enforceStatementKinds: true', async () => {
+      const primaryConnection = createMockConnection();
+      const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
+      primaryConnection.query.mockResolvedValue([rows, []]);
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        enforceStatementKinds: true,
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const cteSql = 'WITH cte AS (SELECT 1 AS id) SELECT * FROM cte WHERE id = ?';
+      const result = await client.query(cteSql, [1]);
+      expect(result.rows).toEqual(rows);
+
+      await expect(client.execute(cteSql, [1])).rejects.toThrow(
+        'execute() does not support SELECT queries. Use query() instead.'
+      );
+    });
+
     it('raw() supports SELECT and returns rows', async () => {
       const primaryConnection = createMockConnection();
       const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
@@ -291,6 +314,30 @@ describe('SqlClient', () => {
       await expect(client.delete('DELETE FROM users WHERE id = ?', [1])).resolves.toBe(2);
     });
 
+    it('passes execution options to convenience methods (get, all, insert, update, delete)', async () => {
+      const primaryConnection = createMockConnection();
+      const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
+      const result = { affectedRows: 2, changedRows: 1, insertId: 10 } as unknown as ResultSetHeader;
+
+      primaryConnection.query.mockResolvedValue([rows, []]);
+      primaryConnection.execute.mockResolvedValue([result, []]);
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const opts = { timeoutMs: 3000 };
+      await expect(client.get('SELECT * FROM users WHERE id = ?', [1], opts)).resolves.toEqual(rows[0]);
+      await expect(client.all('SELECT * FROM users', [], opts)).resolves.toEqual(rows);
+      await expect(client.insert('INSERT INTO users(name) VALUES(?)', ['Bob'], opts)).resolves.toBe(2);
+      await expect(client.update('UPDATE users SET active = ?', [true], false, opts)).resolves.toBe(2);
+      await expect(client.delete('DELETE FROM users WHERE id = ?', [1], opts)).resolves.toBe(2);
+    });
+
     it('exists() returns true when rows are found', async () => {
       const primaryConnection = createMockConnection();
       primaryConnection.query.mockResolvedValue([[{ 1: 1 }] as unknown as RowDataPacket[], []]);
@@ -379,6 +426,48 @@ describe('SqlClient', () => {
       });
 
       await expect(client.ping()).resolves.toBe(false);
+    });
+
+    it('rejects immediately when AbortSignal is already aborted', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(client.query('SELECT 1', [], { signal: controller.signal })).rejects.toThrow('Query was aborted');
+    });
+
+    it('aborts an in-flight query when AbortSignal triggers', async () => {
+      const primaryConnection = createMockConnection();
+      primaryConnection.query.mockImplementation(
+        () =>
+          new Promise(() => {
+            // Intentionally unresolving
+          })
+      );
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const controller = new AbortController();
+      const queryPromise = client.query('SELECT 1', [], { signal: controller.signal });
+
+      setTimeout(() => controller.abort(), 10);
+
+      await expect(queryPromise).rejects.toThrow('Query was aborted');
     });
   });
 

@@ -488,33 +488,48 @@ export interface SqlClientBase {
    * @template T - The row type
    * @param sql - The SQL query
    * @param parameters - Query parameters
+   * @param options - Execution options
    * @returns Promise resolving to the row or null
    */
-  get<T extends RowDataPacket = RowDataPacket>(sql: string, parameters?: SqlParameters): Promise<T | null>;
+  get<T extends RowDataPacket = RowDataPacket>(
+    sql: string,
+    parameters?: SqlParameters,
+    options?: QueryExecutionOptions
+  ): Promise<T | null>;
 
   /**
    * Get all matching rows from a query.
    * @template T - The row type
    * @param sql - The SQL query
    * @param parameters - Query parameters
+   * @param options - Execution options
    * @returns Promise resolving to an array of rows
    */
-  all<T extends RowDataPacket = RowDataPacket>(sql: string, parameters?: SqlParameters): Promise<T[]>;
+  all<T extends RowDataPacket = RowDataPacket>(
+    sql: string,
+    parameters?: SqlParameters,
+    options?: QueryExecutionOptions
+  ): Promise<T[]>;
 
   /**
    * Execute an INSERT statement and return the affected rows count.
    */
-  insert(sql: string, parameters?: SqlParameters): Promise<number>;
+  insert(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<number>;
 
   /**
    * Execute an UPDATE statement and return the affected rows count.
    */
-  update(sql: string, parameters?: SqlParameters, returnChangedRows?: boolean): Promise<number>;
+  update(
+    sql: string,
+    parameters?: SqlParameters,
+    returnChangedRows?: boolean,
+    options?: QueryExecutionOptions
+  ): Promise<number>;
 
   /**
    * Execute a DELETE statement and return the deleted rows count.
    */
-  delete(sql: string, parameters?: SqlParameters): Promise<number>;
+  delete(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<number>;
 
   /**
    * Check whether any rows match the given query.
