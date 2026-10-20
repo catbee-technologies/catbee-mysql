@@ -1409,6 +1409,16 @@ describe('SqlClient', () => {
       const connection = await manager.getPrimaryConnection();
       expect(connection).toBe(pooledConnection);
       expect(pool.getConnection).toHaveBeenCalledTimes(1);
+
+      const secondCall = await manager.getPrimaryConnection();
+      expect(secondCall).toBe(pooledConnection);
+      expect(pool.getConnection).toHaveBeenCalledTimes(1);
+
+      manager.invalidatePrimaryConnection();
+      await manager.getPrimaryConnection();
+      expect(pool.getConnection).toHaveBeenCalledTimes(2);
+
+      await manager.close();
     });
 
     it('covers TransactionClient releaseSavepoint query branch directly', async () => {

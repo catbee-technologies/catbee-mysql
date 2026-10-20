@@ -74,9 +74,16 @@ export class ConnectionManager {
     }
 
     const connection = await this.getPrimaryConnection();
-    const result = await connection.query<T>(sql, [...parameters]);
-    const rows = Array.isArray(result) ? result[0] : result;
-    return rows as T;
+    try {
+      const result = await connection.query<T>(sql, [...parameters]);
+      const rows = Array.isArray(result) ? result[0] : result;
+      return rows as T;
+    } catch (error) {
+      if (this.isFatalConnectionError(error)) {
+        this.invalidatePrimaryConnection(connection);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -93,9 +100,16 @@ export class ConnectionManager {
     }
 
     const connection = await this.getPrimaryConnection();
-    const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
-    const executeResult = Array.isArray(result) ? result[0] : result;
-    return executeResult as T;
+    try {
+      const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
+      const executeResult = Array.isArray(result) ? result[0] : result;
+      return executeResult as T;
+    } catch (error) {
+      if (this.isFatalConnectionError(error)) {
+        this.invalidatePrimaryConnection(connection);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -134,9 +148,7 @@ export class ConnectionManager {
     const connection = await this.getPrimaryConnection();
     registerCancel(() => {
       this.terminateConnection(connection);
-      if (this.primaryConnection === connection) {
-        this.primaryConnection = undefined;
-      }
+      this.invalidatePrimaryConnection(connection);
     });
 
     const result = await connection.query<T>(sql, [...parameters]);
@@ -180,9 +192,7 @@ export class ConnectionManager {
     const connection = await this.getPrimaryConnection();
     registerCancel(() => {
       this.terminateConnection(connection);
-      if (this.primaryConnection === connection) {
-        this.primaryConnection = undefined;
-      }
+      this.invalidatePrimaryConnection(connection);
     });
 
     const result = await connection.execute<T>(sql, [...parameters] as unknown as ExecuteValues);
@@ -207,7 +217,7 @@ export class ConnectionManager {
    * Get a connection from the pool or return the persistent connection.
    *
    * In single-connection mode, creates and reuses one connection.
-   * In pool mode, gets a connection from the pool or waits for one to be available.
+   * In pool mode, gets a connection from the pool and reuses it for getPrimaryConnection callers.
    *
    * @returns Promise resolving to a Connection object
    * @throws Error if connection creation fails
@@ -218,16 +228,30 @@ export class ConnectionManager {
    */
   public async getPrimaryConnection(): Promise<Connection> {
     if (this.isPooled) {
-      // Kept for backward compatibility. For pooled non-transactional queries,
-      // prefer query()/execute() on this manager so pool handles release.
-      return this.ensurePool().getConnection();
+      if (!this.primaryConnection) {
+        this.primaryConnection = await this.ensurePool().getConnection();
+      }
+      return this.primaryConnection;
     }
 
     if (!this.primaryConnection) {
-      this.primaryConnection = await createConnection(this.options);
+      const connection = await createConnection(this.options);
+      this.attachConnectionErrorHandler(connection);
+      this.primaryConnection = connection;
     }
 
     return this.primaryConnection;
+  }
+
+  /**
+   * Invalidate the primary connection so subsequent operations reconnect.
+   *
+   * @param connection - Optional specific connection to invalidate
+   */
+  public invalidatePrimaryConnection(connection?: Connection): void {
+    if (!connection || this.primaryConnection === connection) {
+      this.primaryConnection = undefined;
+    }
   }
 
   /**
@@ -274,19 +298,22 @@ export class ConnectionManager {
    * // manager is now unusable
    */
   public async close(): Promise<void> {
+    if (this.primaryConnection) {
+      const connection = this.primaryConnection;
+      this.primaryConnection = undefined;
+      const maybePooled = connection as Connection & { release?: () => void };
+      if (this.isPooled && typeof maybePooled.release === 'function') {
+        maybePooled.release();
+      } else if (!this.isPooled) {
+        await connection.end();
+      }
+    }
+
     if (this.pool) {
       await this.pool.end();
       this.pool = undefined;
       return;
     }
-
-    if (!this.primaryConnection) {
-      return;
-    }
-
-    const connection = this.primaryConnection;
-    this.primaryConnection = undefined;
-    await connection.end();
   }
 
   /**
@@ -304,6 +331,44 @@ export class ConnectionManager {
     }
 
     destroyable.connection?.destroy?.();
+  }
+
+  private attachConnectionErrorHandler(connection: Connection): void {
+    const emitter = connection as unknown as {
+      on?: (event: string, listener: (...args: any[]) => void) => void;
+    };
+
+    if (typeof emitter.on === 'function') {
+      emitter.on('error', () => {
+        if (this.primaryConnection === connection) {
+          this.primaryConnection = undefined;
+        }
+      });
+    }
+  }
+
+  private isFatalConnectionError(error: unknown): boolean {
+    if (typeof error !== 'object' || error === null) {
+      return false;
+    }
+
+    const maybeErr = error as { code?: string; fatal?: boolean };
+    if (maybeErr.fatal === true) {
+      return true;
+    }
+
+    const connectionCodes = new Set([
+      'PROTOCOL_CONNECTION_LOST',
+      'ECONNRESET',
+      'ETIMEDOUT',
+      'EPIPE',
+      'ENOTFOUND',
+      'ECONNREFUSED',
+      'ER_SERVER_SHUTDOWN',
+      'ERR_STREAM_WRITE_AFTER_END'
+    ]);
+
+    return typeof maybeErr.code === 'string' && connectionCodes.has(maybeErr.code);
   }
 
   private stripOptionsForMysql2(options: PoolOptions): ConnectionOptions {

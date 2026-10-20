@@ -92,7 +92,9 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
         'ER_LOCK_WAIT_TIMEOUT',
         'PROTOCOL_CONNECTION_LOST',
         'ECONNRESET',
-        'ETIMEDOUT'
+        'ETIMEDOUT',
+        'EPIPE',
+        'ERR_STREAM_WRITE_AFTER_END'
       ]
     };
 
@@ -1087,11 +1089,11 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    * @returns True when the error code is configured as retryable
    */
   private isRetryableError(error: unknown): boolean {
-    if (!(error instanceof Error)) {
+    if (typeof error !== 'object' || error === null) {
       return false;
     }
 
-    const maybeCode = error as Error & { code?: string };
+    const maybeCode = error as { code?: string };
     return typeof maybeCode.code === 'string' && this.retryableErrorCodes.has(maybeCode.code);
   }
 
