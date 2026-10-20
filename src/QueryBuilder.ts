@@ -81,21 +81,24 @@ export class QueryBuilder {
    * @returns This QueryBuilder instance for chaining
    */
   public where(column: string, operator: ComparisonOperator, value: SqlValue): this {
-    return this.addComparisonClause('WHERE', column, operator, value);
+    const keyword: ComparisonClauseKeyword = this.hasWhereClause() ? 'AND' : 'WHERE';
+    return this.addComparisonClause(keyword, column, operator, value);
   }
 
   /**
    * Add a WHERE ... IN (...) predicate.
    */
   public whereIn(column: string, values: readonly SqlValue[]): this {
-    return this.addInClause('WHERE', column, values);
+    const keyword: ComparisonClauseKeyword = this.hasWhereClause() ? 'AND' : 'WHERE';
+    return this.addInClause(keyword, column, values);
   }
 
   /**
    * Add a WHERE ... BETWEEN ? AND ? predicate.
    */
   public whereBetween(column: string, lower: SqlValue, upper: SqlValue): this {
-    return this.addBetweenClause('WHERE', column, lower, upper);
+    const keyword: ComparisonClauseKeyword = this.hasWhereClause() ? 'AND' : 'WHERE';
+    return this.addBetweenClause(keyword, column, lower, upper);
   }
 
   /**
@@ -222,8 +225,8 @@ export class QueryBuilder {
    *
    * @example
    * query
-   *   .update('users', { active: true, updated_at: new Date() })
-   *   .where('id = ?', 1);
+   *   .update('users', { active: true, updated_at: '2024-01-15 12:30:45' })
+   *   .where('id', '=', 1);
    */
   public update(table: string, updates: Record<string, SqlValue>): this {
     const setClauses = Object.keys(updates)
@@ -245,13 +248,13 @@ export class QueryBuilder {
    * @example
    * query
    *   .delete('users')
-   *   .where('id = ?', 1);
+   *   .where('id', '=', 1);
    *
    * @example
    * // DELETE WHERE age > 100
    * query
    *   .delete('users')
-   *   .where('age > ?', 100);
+   *   .where('age', '>', 100);
    */
   public delete(table: string): this {
     this.parts.push(`DELETE FROM ${this.escapeQualifiedIdentifier(table)}`);
@@ -429,9 +432,19 @@ export class QueryBuilder {
    * @throws Error when the table reference has unsupported extra segments
    */
   private escapeTableReference(reference: string): string {
-    const [tableName, alias, ...extra] = reference.trim().split(/\s+/);
+    const parts = reference.trim().split(/\s+/);
 
-    if (extra.length > 0) {
+    let tableName: string;
+    let alias: string | undefined;
+
+    if (parts.length === 1) {
+      tableName = parts[0];
+    } else if (parts.length === 2) {
+      [tableName, alias] = parts;
+    } else if (parts.length === 3 && parts[1].toUpperCase() === 'AS') {
+      tableName = parts[0];
+      alias = parts[2];
+    } else {
       throw new Error(`Invalid table reference: "${reference}"`);
     }
 
@@ -440,6 +453,10 @@ export class QueryBuilder {
     }
 
     return `${this.escapeQualifiedIdentifier(tableName)} ${this.escapeIdentifier(alias)}`;
+  }
+
+  private hasWhereClause(): boolean {
+    return this.parts.some(part => part.startsWith('WHERE '));
   }
 
   /**

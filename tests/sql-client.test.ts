@@ -1921,5 +1921,35 @@ describe('SqlClient', () => {
       const { sql } = buildQuery().select('*').from('app.users u').build();
       expect(sql).toContain('FROM `app`.`users` `u`');
     });
+
+    it('supports table references with optional AS keyword for alias', () => {
+      const { sql: sqlFrom } = buildQuery().select('*').from('users AS u').build();
+      expect(sqlFrom).toBe('SELECT * FROM `users` `u`');
+
+      const { sql: sqlJoin } = buildQuery()
+        .select('u.id', 'p.title')
+        .from('schema.users as u')
+        .join('LEFT', 'schema.posts AS p', 'u.id = p.user_id')
+        .build();
+      expect(sqlJoin).toBe(
+        'SELECT u.id, p.title FROM `schema`.`users` `u` LEFT JOIN `schema`.`posts` `p` ON u.id = p.user_id'
+      );
+    });
+
+    it('automatically uses AND when where(), whereIn(), or whereBetween() are called repeatedly', () => {
+      const query = buildQuery()
+        .select('*')
+        .from('users')
+        .where('age', '>', 18)
+        .where('active', '=', true)
+        .whereIn('role', ['admin', 'editor'])
+        .whereBetween('score', 80, 100);
+
+      const { sql, parameters } = query.build();
+      expect(sql).toBe(
+        'SELECT * FROM `users` WHERE `age` > ? AND `active` = ? AND `role` IN (?, ?) AND `score` BETWEEN ? AND ?'
+      );
+      expect(parameters).toEqual([18, true, 'admin', 'editor', 80, 100]);
+    });
   });
 });
