@@ -233,6 +233,33 @@ export type ExecuteResult = ResultSetHeader | ResultSetHeader[];
 export type QueryResult_ = QueryResult;
 
 /**
+ * Supported transaction isolation levels in MySQL and MariaDB.
+ */
+export type TransactionIsolationLevel = 'READ UNCOMMITTED' | 'READ COMMITTED' | 'REPEATABLE READ' | 'SERIALIZABLE';
+
+/**
+ * Options for starting a transaction.
+ */
+export interface TransactionOptions {
+  /**
+   * The transaction isolation level for this transaction.
+   *
+   * Executes standard ANSI SQL `SET TRANSACTION ISOLATION LEVEL <level>`
+   * on the dedicated connection prior to beginning the transaction.
+   * Scoped only to this transaction; does not alter session or pool defaults.
+   */
+  isolationLevel?: TransactionIsolationLevel;
+
+  /**
+   * Whether to execute the transaction in read-only mode (MySQL 5.6.5+, MariaDB 10.0+).
+   *
+   * When true, issues `SET TRANSACTION READ ONLY`.
+   * When false, issues `SET TRANSACTION READ WRITE`.
+   */
+  readOnly?: boolean;
+}
+
+/**
  * Interface for SQL transaction operations.
  * Provides all query/execution methods plus commit/rollback.
  *
@@ -548,13 +575,18 @@ export interface SqlClientBase {
 
   /**
    * Start a manual transaction.
+   *
+   * @param options - Optional transaction options (e.g. isolation level, readOnly)
    */
-  startTransaction(): Promise<SqlTransaction>;
+  startTransaction(options?: TransactionOptions): Promise<SqlTransaction>;
 
   /**
    * Execute a callback within an automatic transaction.
+   *
+   * @param callback - Async function to execute within the transaction
+   * @param options - Optional transaction options (e.g. isolation level, readOnly)
    */
-  transaction<T>(callback: (transaction: SqlTransaction) => Promise<T>): Promise<T>;
+  transaction<T>(callback: (transaction: SqlTransaction) => Promise<T>, options?: TransactionOptions): Promise<T>;
 
   /**
    * Close the connection or connection pool.

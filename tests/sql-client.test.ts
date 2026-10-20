@@ -499,6 +499,114 @@ describe('SqlClient', () => {
       expect(transactionConnection.end).toHaveBeenCalledTimes(1);
     });
 
+    it('supports isolationLevel and readOnly options on startTransaction', async () => {
+      const primaryConnection = createMockConnection();
+      const transactionConnection = createMockConnection();
+
+      transactionConnection.query.mockResolvedValue([[], []]);
+      mockedCreateConnection
+        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
+        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const transaction = await client.startTransaction({
+        isolationLevel: 'READ COMMITTED',
+        readOnly: true
+      });
+      await transaction.commit();
+
+      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
+      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION READ ONLY');
+      expect(transactionConnection.beginTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('supports readOnly: false on startTransaction', async () => {
+      const primaryConnection = createMockConnection();
+      const transactionConnection = createMockConnection();
+
+      transactionConnection.query.mockResolvedValue([[], []]);
+      mockedCreateConnection
+        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
+        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const transaction = await client.startTransaction({
+        isolationLevel: 'REPEATABLE READ',
+        readOnly: false
+      });
+      await transaction.commit();
+
+      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION READ WRITE');
+      expect(transactionConnection.beginTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects invalid isolation levels and releases the connection', async () => {
+      const primaryConnection = createMockConnection();
+      const transactionConnection = createMockConnection();
+
+      mockedCreateConnection
+        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
+        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(
+        client.startTransaction({
+          isolationLevel: 'SNAPSHOT' as unknown as 'READ COMMITTED'
+        })
+      ).rejects.toThrow('Invalid transaction isolation level: "SNAPSHOT"');
+
+      expect(transactionConnection.end).toHaveBeenCalledTimes(1);
+      expect(transactionConnection.beginTransaction).not.toHaveBeenCalled();
+    });
+
+    it('passes transaction options from transaction() to startTransaction()', async () => {
+      const primaryConnection = createMockConnection();
+      const transactionConnection = createMockConnection();
+
+      transactionConnection.query.mockResolvedValue([[], []]);
+      mockedCreateConnection
+        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
+        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const result = await client.transaction(
+        async () => {
+          return 'done';
+        },
+        { isolationLevel: 'SERIALIZABLE' }
+      );
+
+      expect(result).toBe('done');
+      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
+      expect(transactionConnection.beginTransaction).toHaveBeenCalledTimes(1);
+      expect(transactionConnection.commit).toHaveBeenCalledTimes(1);
+    });
+
     it('releases transaction connection when beginTransaction fails', async () => {
       const primaryConnection = createMockConnection();
       const transactionConnection = createMockConnection();

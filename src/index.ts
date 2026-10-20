@@ -17,6 +17,8 @@ export type {
   SqlExecuteResult,
   QueryRows,
   SqlTransaction,
+  TransactionIsolationLevel,
+  TransactionOptions,
   SqlClientBase
 } from './types';
 

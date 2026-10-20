@@ -13,7 +13,9 @@ import type {
   SqlExecuteResult,
   SqlValue,
   SqlParameters,
-  SqlTransaction
+  SqlTransaction,
+  TransactionIsolationLevel,
+  TransactionOptions
 } from './types';
 import { ConnectionManager } from './ConnectionManager';
 import { TransactionClient } from './TransactionClient';
@@ -741,11 +743,45 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    *   throw error;
    * }
    *
+   * @param options - Optional transaction options (e.g. isolationLevel, readOnly)
+   * @returns Promise resolving to a TransactionClient instance
+   * @throws Error if connection creation or transaction initialization fails
+   *
+   * @example
+   * const tx = await db.startTransaction({ isolationLevel: 'READ COMMITTED' });
+   * try {
+   *   await tx.execute('UPDATE users SET active = ? WHERE id = ?', [true, 1]);
+   *   await tx.commit();
+   * } catch (error) {
+   *   await tx.rollback();
+   *   throw error;
+   * }
+   *
    * @see transaction For automatic transaction handling
    */
-  public async startTransaction(): Promise<SqlTransaction> {
+  public async startTransaction(options?: TransactionOptions): Promise<SqlTransaction> {
     const connection = await this.connectionManager.createTransactionalConnection();
     try {
+      if (options?.isolationLevel) {
+        const level = options.isolationLevel.toUpperCase() as TransactionIsolationLevel;
+        const validLevels: TransactionIsolationLevel[] = [
+          'READ UNCOMMITTED',
+          'READ COMMITTED',
+          'REPEATABLE READ',
+          'SERIALIZABLE'
+        ];
+        if (!validLevels.includes(level)) {
+          throw new Error(
+            `Invalid transaction isolation level: "${options.isolationLevel}". Supported levels: ${validLevels.join(', ')}`
+          );
+        }
+        await connection.query(`SET TRANSACTION ISOLATION LEVEL ${level}`);
+      }
+
+      if (options?.readOnly !== undefined) {
+        await connection.query(options.readOnly ? 'SET TRANSACTION READ ONLY' : 'SET TRANSACTION READ WRITE');
+      }
+
       await connection.beginTransaction();
       return new TransactionClient(connection);
     } catch (error) {
@@ -763,6 +799,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    *
    * @template T - The type of value returned by the callback
    * @param callback - Async function to execute within the transaction
+   * @param options - Optional transaction options (e.g. isolationLevel, readOnly)
    * @returns Promise resolving to the callback result
    * @throws Error thrown by the callback (with automatic rollback)
    * @throws Error if the transaction fails
@@ -784,48 +821,18 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    * });
    *
    * @example
-   * // Transaction with error handling
-   * try {
-   *   await db.transaction(async (tx) => {
-   *     const userId = await tx.insert(
-   *       'INSERT INTO users(name) VALUES(?)',
-   *       ['Bob']
-   *     );
-   *
-   *     // Simulate an error - transaction will auto-rollback
-   *     if (!userId) throw new Error('Failed to create user');
-   *
-   *     await tx.execute(
-   *       'UPDATE user_counts SET total = total + 1'
-   *     );
-   *   });
-   * } catch (error) {
-   *   console.log('Transaction failed and was rolled back');
-   *   // All changes discarded
-   * }
-   *
-   * @example
-   * // Transaction with multiple operations
+   * // Transaction with custom isolation level
    * await db.transaction(async (tx) => {
-   *   // Transfer funds between accounts
-   *   await tx.update(
-   *     'UPDATE accounts SET balance = balance - ? WHERE id = ?',
-   *     [100, 'account1']
-   *   );
-   *
-   *   await tx.update(
-   *     'UPDATE accounts SET balance = balance + ? WHERE id = ?',
-   *     [100, 'account2']
-   *   );
-   *
-   *   // If we get here, both updates are committed
-   *   // If an error occurs, both are rolled back
-   * });
+   *   return await tx.query('SELECT * FROM accounts');
+   * }, { isolationLevel: 'READ COMMITTED', readOnly: true });
    *
    * @see startTransaction For manual transaction control
    */
-  public async transaction<T>(callback: (transaction: SqlTransaction) => Promise<T>): Promise<T> {
-    const transaction = await this.startTransaction();
+  public async transaction<T>(
+    callback: (transaction: SqlTransaction) => Promise<T>,
+    options?: TransactionOptions
+  ): Promise<T> {
+    const transaction = await this.startTransaction(options);
     let result: T;
 
     try {
