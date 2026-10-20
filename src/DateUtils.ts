@@ -79,24 +79,25 @@ export function getCurrentUtcMysqlTimestamp(includeMilliseconds = false): string
  * console.log(date.toISOString()); // 2024-01-15T12:30:45.000Z
  */
 export function parseMysqlDateTime(mysqlDatetimeString: string): Date {
-  // MySQL DATETIME format: YYYY-MM-DD HH:MM:SS or YYYY-MM-DD HH:MM:SS.mmm
-  const regex = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{3}))?$/;
+  // MySQL DATETIME format: YYYY-MM-DD HH:MM:SS or YYYY-MM-DD HH:MM:SS.ffffff
+  const regex = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/;
   const match = regex.exec(mysqlDatetimeString);
 
   if (!match) {
     throw new Error(
-      `Invalid MySQL DATETIME format: "${mysqlDatetimeString}". Expected: "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD HH:MM:SS.mmm"`
+      `Invalid MySQL DATETIME format: "${mysqlDatetimeString}". Expected: "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD HH:MM:SS.ffffff"`
     );
   }
 
-  const [, year, month, day, hours, minutes, seconds, milliseconds] = match;
+  const [, year, month, day, hours, minutes, seconds, fractional] = match;
   const yearNum = Number.parseInt(year, 10);
   const monthNum = Number.parseInt(month, 10);
   const dayNum = Number.parseInt(day, 10);
   const hoursNum = Number.parseInt(hours, 10);
   const minutesNum = Number.parseInt(minutes, 10);
   const secondsNum = Number.parseInt(seconds, 10);
-  const millisecondsNum = Number.parseInt((milliseconds || '000').padEnd(3, '0'), 10);
+  const msString = fractional ? fractional.slice(0, 3).padEnd(3, '0') : '000';
+  const millisecondsNum = Number.parseInt(msString, 10);
 
   // Validate ranges
   if (monthNum < 1 || monthNum > 12) {
@@ -120,7 +121,7 @@ export function parseMysqlDateTime(mysqlDatetimeString: string): Date {
   }
 
   // Construct ISO string and parse as UTC
-  const isoString = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${(milliseconds || '000').padEnd(3, '0')}Z`;
+  const isoString = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${msString}Z`;
   const date = new Date(isoString);
 
   // Verify the date is valid (Date constructor doesn't throw on invalid dates)

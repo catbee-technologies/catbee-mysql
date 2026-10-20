@@ -82,6 +82,17 @@ describe('Date Utilities', () => {
       expect(result.toISOString()).toBe('2024-01-15T12:30:45.789Z');
     });
 
+    it('parses MySQL DATETIME string with microsecond precision (6 digits) and variable precision', () => {
+      const microseconds = parseMysqlDateTime('2024-01-15 12:30:45.123456');
+      expect(microseconds.toISOString()).toBe('2024-01-15T12:30:45.123Z');
+
+      const singleDigit = parseMysqlDateTime('2024-01-15 12:30:45.5');
+      expect(singleDigit.toISOString()).toBe('2024-01-15T12:30:45.500Z');
+
+      const twoDigits = parseMysqlDateTime('2024-01-15 12:30:45.25');
+      expect(twoDigits.toISOString()).toBe('2024-01-15T12:30:45.250Z');
+    });
+
     it('throws error for invalid format', () => {
       expect(() => parseMysqlDateTime('2024-01-15')).toThrow('Invalid MySQL DATETIME format');
       expect(() => parseMysqlDateTime('not a date')).toThrow('Invalid MySQL DATETIME format');
