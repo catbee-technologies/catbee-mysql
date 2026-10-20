@@ -29,11 +29,13 @@ A lightweight, type-safe MySQL client for Node.js with comprehensive transaction
 - 🔄 **Transaction support**: Both manual and automatic transaction handling with rollback on error
 - 🧩 **Nested transactions**: Savepoints with rollback-to and release helpers
 - 🚀 **Connection pooling**: Built-in connection pool support for high-concurrency scenarios
-- 🔨 **Query builder**: Fluent SQL builder for common operations
+- 🔨 **Query builder**: Fluent SQL builder for common operations with identifier escaping
 - 🏷️ **Named parameters**: Safe `:name` placeholders compiled to positional parameters
-- 📈 **Resilience controls**: Retry policy, timeout, and cancellation support
-- 👀 **Middleware & events**: composable `db.use()` middleware chain and `EventEmitter` for observability
-- 🎯 **Convenience methods**: `get()`, `all()`, `insert()`, `update()`, `delete()` helpers
+- 🔒 **Distributed advisory locks**: Single-session `withAdvisoryLock()` with `GET_LOCK`/`RELEASE_LOCK` for cluster-wide synchronization
+- 📦 **Schema migrations & bootstrap**: Production-grade `UpgradeManager` for sequential migrations, rollbacks, and instant fresh-database bootstrap (`schemaInit`)
+- 📈 **Resilience controls**: Retry policy, timeout, and active connection cancellation support
+- 👀 **Middleware & events**: Composable `db.use()` middleware chain and `EventEmitter` for observability
+- 🎯 **Convenience methods**: `get()`, `all()`, `insert()`, `update()`, `delete()`, `exists()`, and `count()` helpers
 - 📦 **Lightweight**: Thin wrapper around `mysql2/promise` with minimal overhead
 
 ## Installation
@@ -41,6 +43,11 @@ A lightweight, type-safe MySQL client for Node.js with comprehensive transaction
 ```bash
 npm install @catbee/mysql
 ```
+
+### Requirements
+
+- **Node.js**: `>= 20.0.0`
+- **Database**: MySQL `>= 8.0` / `8.4` or MariaDB `>= 10.5`
 
 ## Quick Start
 
@@ -115,7 +122,10 @@ await db.delete('DELETE FROM users WHERE role IN (?, ?)', ['admin', 'editor']);
 ### Manual Transactions
 
 ```ts
-const transaction = await db.startTransaction();
+// Start transaction with optional settings (e.g. isolation level, readOnly)
+const transaction = await db.startTransaction({
+  isolationLevel: 'READ COMMITTED'
+});
 
 try {
   // Execute statements within the transaction
@@ -136,11 +146,92 @@ try {
 
 ```ts
 // Automatically commits on success, rolls back on error
+// Optional: pass TransactionOptions as second argument
 await db.transaction(async tx => {
   await tx.execute('UPDATE users SET active = ? WHERE id = ?', [true, 1]);
 
   await tx.execute('INSERT INTO audit_logs(action, user_id) VALUES(?, ?)', ['activate', 1]);
+}, { isolationLevel: 'READ COMMITTED' });
+```
+
+### Distributed Advisory Locks
+
+Safely synchronize distributed workloads across multiple application instances using MySQL session-scoped advisory locks (`GET_LOCK` / `RELEASE_LOCK`):
+
+```ts
+// Holds advisory lock on a dedicated connection session; releases automatically in finally
+await db.withAdvisoryLock('nightly_data_aggregation', 15, async lockedClient => {
+  // Serialized execution across clients sharing this lock namespace
+  await lockedClient.execute('CALL aggregate_daily_metrics()');
 });
+```
+
+### Schema Migrations & Bootstrap (UpgradeManager)
+
+Manage schema versioning with sequential integer migrations (`1, 2, 3...`) and instant fresh-database bootstrapping (`schemaInit`):
+
+```ts
+import { SqlClient, UpgradeManager } from '@catbee/mysql';
+
+const db = SqlClient.createPool({ /* ... connection options */ });
+
+const upgradeManager = new UpgradeManager(db, {
+  // Snapshot initializer: builds latest consolidated schema directly on fresh databases
+  schemaInit: {
+    version: 2,
+    create: async client => {
+      await client.execute(`
+        CREATE TABLE users (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          email VARCHAR(255) NOT NULL UNIQUE,
+          role VARCHAR(50) DEFAULT 'user',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    }
+  },
+  // Sequential migrations for existing databases
+  migrations: [
+    {
+      version: 1,
+      name: 'create_users',
+      up: async client => {
+        await client.execute(`
+          CREATE TABLE users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      }
+    },
+    {
+      version: 2,
+      name: 'add_user_roles',
+      up: async client => {
+        await client.execute('ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT "user";');
+      },
+      down: async client => {
+        await client.execute('ALTER TABLE users DROP COLUMN role;');
+      }
+    }
+  ]
+});
+
+// Unified deployment entrypoint:
+// Automatically bootstraps fresh databases or upgrades existing databases.
+// Concurrency-safe across multiple replicas starting simultaneously under advisory lock.
+const result = await upgradeManager.setup();
+console.log(`Current schema version: ${result.currentVersion}`);
+
+// Inspect live status:
+const status = await upgradeManager.getStatus();
+console.log(`Version: ${status.currentVersion}, Up to date: ${status.isUpToDate}`);
+
+// Manual operations:
+await upgradeManager.upgrade(); // Apply all pending migrations up to latest
+await upgradeManager.rollback(); // Roll back single most recent migration
+await upgradeManager.downgrade(1); // Roll back to target version 1
 ```
 
 ### Query Builder
@@ -199,6 +290,9 @@ const query5 = buildQuery()
   .andBetween('age', 18, 40);
 ```
 
+> [!TIP]
+> **SQL Parameter Safety**: Bound parameters (`?`, `:name`) safely parameterize literal values (strings, numbers, dates, booleans) to prevent SQL injection. However, database protocol parameters cannot be used for dynamic table or column names. `QueryBuilder` automatically validates and escapes table and column identifiers with MySQL backticks.
+
 ### Convenience Methods in Transactions
 
 ```ts
@@ -233,41 +327,44 @@ await db.transaction(async tx => {
 - `raw<T>(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<T>` - Execute any SQL and return raw mysql2 result
 - `queryNamed<T>(sql: string, namedParameters: Record<string, SqlValue>, options?: QueryExecutionOptions): Promise<SqlQueryResult<T>>` - SELECT with named params
 - `executeNamed<T>(sql: string, namedParameters: Record<string, SqlValue>, options?: QueryExecutionOptions): Promise<SqlExecuteResult<T>>` - Statement with named params
-- `get<T>(sql: string, parameters?: SqlParameters): Promise<T | null>` - Get a single row or null
-- `all<T>(sql: string, parameters?: SqlParameters): Promise<T[]>` - Get all matching rows
+- `get<T>(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<T | null>` - Get a single row or null
+- `all<T>(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<T[]>` - Get all matching rows
 - `exists(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<boolean>` - Return true if any rows match
-- `count(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<number>` - Return aggregate numeric value (COUNT, SUM, etc.)
-- `insert(sql: string, parameters?: SqlParameters): Promise<number>` - Insert and get affected row count
-- `update(sql: string, parameters?: SqlParameters, returnChangedRows?: boolean): Promise<number>` - Update and get affected count
-- `delete(sql: string, parameters?: SqlParameters): Promise<number>` - Delete and get affected count
-- `startTransaction(): Promise<SqlTransaction>` - Start a manual transaction
-- `transaction<T>(callback: (tx: SqlTransaction) => Promise<T>): Promise<T>` - Execute callback in automatic transaction
+- `count(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<number>` - Return the numeric value of the first column of the first row (returns `0` if empty or null). Primarily intended for `COUNT(*)` queries
+- `insert(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<number>` - Insert and get affected row count
+- `update(sql: string, parameters?: SqlParameters, returnChangedRows?: boolean, options?: QueryExecutionOptions): Promise<number>` - Update and get affected count
+- `delete(sql: string, parameters?: SqlParameters, options?: QueryExecutionOptions): Promise<number>` - Delete and get affected count
+- `startTransaction(options?: TransactionOptions): Promise<SqlTransaction>` - Start a manual transaction
+- `transaction<T>(callback: (tx: SqlTransaction) => Promise<T>, options?: TransactionOptions): Promise<T>` - Execute callback in automatic transaction
 - `ping(): Promise<boolean>` - Check connection health
+- `withAdvisoryLock<T>(lockName: string, timeoutSeconds: number, callback: (client: SqlClient) => Promise<T>): Promise<T>` - Execute callback under a distributed MySQL advisory lock
 - `close(): Promise<void>` - Close the connection/pool
 
 ### SqlTransaction
 
-`SqlTransaction` supports SQL execution helpers and transaction controls.
+`SqlTransaction` supports query and execution helpers on a dedicated connection session, as well as commit, rollback, and savepoint controls.
+
+> [!NOTE]
+> **Return Type Difference**: While `SqlClient.query()` and `SqlClient.execute()` return enriched telemetry envelopes (`SqlQueryResult<T>` and `SqlExecuteResult<T>` containing `durationMs`, `attempt`, etc.), `SqlTransaction.query()` and `SqlTransaction.execute()` return query rows (`T extends QueryRows = RowDataPacket[]`) and execution headers (`T extends QueryResult_ = ResultSetHeader`) directly to minimize overhead inside latency-critical transactions.
 
 Supported SQL helpers:
 
-- `query<T>(sql: string, parameters?: SqlParameters): Promise<T>`
-- `execute<T>(sql: string, parameters?: SqlParameters): Promise<T>`
-- `get<T>(sql: string, parameters?: SqlParameters): Promise<T | null>`
-- `all<T>(sql: string, parameters?: SqlParameters): Promise<T[]>`
-- `insert(sql: string, parameters?: SqlParameters): Promise<number>`
-- `update(sql: string, parameters?: SqlParameters, returnChangedRows?: boolean): Promise<number>`
-- `delete(sql: string, parameters?: SqlParameters): Promise<number>`
-
+- `query<T>(sql: string, parameters?: SqlParameters): Promise<T>` - Execute query and return rows directly
+- `execute<T>(sql: string, parameters?: SqlParameters): Promise<T>` - Execute statement and return result header directly
+- `get<T>(sql: string, parameters?: SqlParameters): Promise<T | null>` - Get single row or null
+- `all<T>(sql: string, parameters?: SqlParameters): Promise<T[]>` - Get all matching rows
+- `insert(sql: string, parameters?: SqlParameters): Promise<number>` - Insert and return affected rows count
+- `update(sql: string, parameters?: SqlParameters, returnChangedRows?: boolean): Promise<number>` - Update and return affected or changed count
+- `delete(sql: string, parameters?: SqlParameters): Promise<number>` - Delete and return deleted rows count
 - `exists(sql: string, parameters?: SqlParameters): Promise<boolean>` - Return true if any rows match
-- `count(sql: string, parameters?: SqlParameters): Promise<number>` - Return aggregate numeric value
+- `count(sql: string, parameters?: SqlParameters): Promise<number>` - Return numeric value of first column of first row (or `0`)
 - `commit(): Promise<void>` - Commit the transaction
 - `rollback(): Promise<void>` - Rollback the transaction
 - `savepoint(name?: string): Promise<string>` - Create a transaction savepoint
 - `rollbackTo(name: string): Promise<void>` - Roll back to a savepoint
 - `releaseSavepoint(name: string): Promise<void>` - Release a savepoint
 
-Not part of `SqlTransaction`: `use`, `raw`, `queryNamed`, `executeNamed`, `ping`, `startTransaction`, `transaction`, `close`.
+Not part of `SqlTransaction`: `use`, `raw`, `queryNamed`, `executeNamed`, `ping`, `startTransaction`, `transaction`, `withAdvisoryLock`, `close`.
 
 ### QueryBuilder
 
@@ -306,6 +403,137 @@ Notes:
 - `operator` is one of `=`, `!=`, `>`, `>=`, `<`, `<=`, `LIKE`.
 - `join(type, ...)` supports `INNER`, `LEFT`, and `RIGHT`.
 - `whereIn`/`andIn`/`orIn`/`havingIn` require at least one value.
+
+### UpgradeManager
+
+Coordinates database schema evolution, sequential migrations, and fresh database bootstrapping under distributed MySQL advisory locks (`GET_LOCK`):
+
+- **Sequential Integer Migrations**: Strict 1, 2, 3... ordering with gap validation and bidirectional rollback support (`up`/`down`).
+- **Instant Snapshot Bootstrap (`schemaInit`)**: Bootstraps fresh databases directly to the target schema in one shot, bypassing redundant historical migrations.
+- **Multi-Instance Coordination**: `setup()` runs inside a cluster-wide advisory lock, safely coordinating concurrent replica startups without race conditions.
+- **Resilient State Tracking**: Single-row tracking table with `'idle'`, `'migrating'`, and `'failed'` states to prevent cascading partial DDL errors.
+
+#### Maintaining `schemaInit` & `migrations` in Parallel
+
+> [!IMPORTANT]
+> **Sequential Migration Rule**: `migrations` must always form a continuous, unbroken sequence starting at `1` (`1, 2, 3...`). `schemaInit` acts as a fast-forward snapshot for clean databases, but does not replace earlier migrations for databases upgrading sequentially.
+
+When evolving your database schema, maintain `schemaInit` as the **current target snapshot** and `migrations` as the **incremental changelog**:
+
+- **Adding a column or table**:
+  - Update `schemaInit` to include the new column or table directly in its `CREATE TABLE` definition.
+  - Add a new migration step (e.g. `version: 2`) with `ALTER TABLE ... ADD COLUMN ...`.
+- **Modifying or dropping a column or table**:
+  - Update `schemaInit` to reflect the final schema (remove dropped columns or tables).
+  - Add a new migration step (e.g. `version: 3`) with `ALTER TABLE ... DROP COLUMN ...` or `DROP TABLE ...`.
+
+```ts
+import { SqlClient, UpgradeManager } from '@catbee/mysql';
+
+const db = await SqlClient.create({
+  host: 'localhost',
+  user: 'root',
+  password: 'password',
+  database: 'myapp'
+});
+
+const upgradeManager = new UpgradeManager(db, {
+  versionTablePrefix: '_version', // default
+  // 1. Snapshot: Creates the full latest schema (version 2) for fresh databases
+  schemaInit: {
+    version: 2,
+    create: async client => {
+      await client.execute(`
+        CREATE TABLE users (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          email VARCHAR(255) NOT NULL UNIQUE,
+          role VARCHAR(50) NOT NULL DEFAULT 'user',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    }
+  },
+  // 2. Incremental migrations for existing databases
+  migrations: [
+    {
+      version: 1,
+      name: 'create_users',
+      up: async client => {
+        await client.execute(`
+          CREATE TABLE users (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            email VARCHAR(255) NOT NULL UNIQUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `);
+      }
+    },
+    {
+      version: 2,
+      name: 'add_user_roles',
+      up: async client => {
+        // Safe schema evolution: specifying a DEFAULT value ensures existing rows migrate without error
+        await client.execute('ALTER TABLE users ADD COLUMN role VARCHAR(50) NOT NULL DEFAULT "user";');
+      },
+      down: async client => {
+        await client.execute('ALTER TABLE users DROP COLUMN role;');
+      }
+    }
+  ]
+});
+
+// Single unified entrypoint:
+// - Fresh database: executes schemaInit directly and records version 2 (instant bootstrap)
+// - Existing database at version 1: executes migration 2 to reach version 2
+// - Uninitialized database without schemaInit: executes migration 1 and 2 sequentially
+const result = await upgradeManager.setup();
+console.log(`Database is now at version ${result.currentVersion}`);
+```
+
+#### Constructor Options (`UpgradeManagerOptions`)
+
+- `versionTablePrefix?: string` - Prefix for the version tracking table name (default: `'_version'`)
+- `versionTableSuffix?: string` - Optional suffix appended to version table (e.g. `'auth'` -> `'_version_auth'`)
+- `tableName?: string` - Full custom version tracking table name (overrides prefix/suffix if specified)
+- `migrations?: MigrationStep[]` - Array of ordered migration steps
+- `lockTimeoutSeconds?: number` - Advisory lock acquisition timeout in seconds (default: `60`)
+- `autoRollbackOnFailure?: boolean` - Whether to attempt running `step.down()` if `step.up()` fails during upgrade (default: `false`)
+- `schemaInit?: SchemaInitOption` - Snapshot schema initializer for bootstrapping fresh databases. Accepts an object (`{ version?: number; create: (client: SqlClient) => Promise<void> }`) or a shorthand function (`(client: SqlClient) => Promise<void>`, defaulting to highest registered migration version)
+- `logger?: UpgradeLogger` - Custom logger interface (`debug`, `info`, `warn`, `error`)
+
+##### `schemaInit` Forms (`SchemaInitOption`)
+
+- **Declarative Object (`SchemaInitializer`)**: Specify explicit target version alongside create:
+  ```ts
+  schemaInit: {
+    version: 2,
+    create: async client => { await client.execute('CREATE TABLE users (...)'); }
+  }
+  ```
+- **Direct Function Shorthand**: Pass create function directly; target version defaults to highest registered migration version:
+  ```ts
+  schemaInit: async client => { await client.execute('CREATE TABLE users (...)'); }
+  ```
+
+#### Instance Methods
+
+- `setup(targetVersion?: number): Promise<UpgradeResult>` - Unified entrypoint: bootstraps fresh DB or upgrades existing DB under advisory lock
+- `upgrade(targetVersion?: number): Promise<UpgradeResult>` - Apply pending migrations up to target version (defaults to latest)
+- `bootstrap(targetVersion?: number): Promise<UpgradeResult>` - Directly run snapshot schema initializer on a fresh database
+- `downgrade(targetVersion: number): Promise<UpgradeResult>` - Roll back migrations down to target version in descending order
+- `rollback(): Promise<UpgradeResult>` - Roll back the single most recently applied migration
+- `getStatus(targetVersion?: number): Promise<UpgradeStatus>` - Inspect live database status (non-blocking snapshot)
+- `getCurrentVersion(): Promise<number>` - Read current version integer (returns `0` if uninitialized)
+- `isFreshDatabase(client?: SqlClient): Promise<boolean>` - Check if database contains no application tables and version 0
+- `resetFailedState(newVersion?: number): Promise<void>` - Reset version table status from `'failed'`/`'migrating'` to `'idle'`
+- `addMigration(migration: MigrationStep): this` - Register a migration step (chainable)
+- `addMigrations(migrations: MigrationStep[]): this` - Register multiple migration steps (chainable)
+- `setSchemaInit(initializer: SchemaInitOption, version?: number): this` - Set or override schema initializer (chainable)
+- `getRegisteredMigrations(): readonly MigrationStep[]` - Return sorted registered migrations
+- `getTableName(): string` - Return the resolved version tracking table name
+- `getVersionTablePrefix(): string` - Return the configured or default table prefix
+- `getVersionTableSuffix(): string | undefined` - Return the configured table suffix, if any
+- `getLockName(): string` - Return the computed advisory lock name used for synchronization
 
 ### SQL Parameter Types
 
@@ -379,8 +607,8 @@ db.on('error:query', ctx => {
 `query()` returns `SqlQueryResult<T>`:
 
 ```ts
-const result = await db.query('SELECT * FROM users WHERE id = ?', [1]);
-result.rows       // T — the returned rows
+const result = await db.query<User[]>('SELECT * FROM users WHERE id = ?', [1]);
+result.rows       // T (defaults to RowDataPacket[]; typed as User[] when supplied)
 result.sql        // string — the SQL that was executed
 result.parameters // SqlParameters — bound values
 result.durationMs // number — round-trip time in ms
@@ -404,7 +632,7 @@ result.attempt    // number
 - Retries can be enabled globally with `retry.maxRetries > 0`.
 - `execute(...)` retries only when `{ idempotent: true }` is provided.
 - Per-call retries can be disabled with `{ retry: false }`.
-- Timeout and abort signal both trigger active connection termination for server-side cancellation.
+- When an operation times out or an `AbortSignal` fires, `@catbee/mysql` actively invokes `destroy()` on the underlying connection socket rather than merely rejecting the promise. This severs the network connection, triggering server-side query termination in MySQL and ensuring the aborted connection is discarded and never recycled back into the pool in a dirty state.
 - Optional strict statement enforcement is available with `enforceStatementKinds: true`:
   - `query(...)` accepts only `SELECT`
   - `execute(...)`/`executeNamed(...)` reject `SELECT`
@@ -534,7 +762,7 @@ const verifiedAt = user.email_verified_at ? parseMysqlDateTime(user.email_verifi
 console.log(new Date(createdAt).toLocaleString()); // Local timezone display
 ```
 
-### Best Practices
+### Date Handling Best Practices
 
 1. **Convert Date values before binding** - Use `formatDateForMysql()` instead of passing Date directly
 2. **Use explicit UTC strings for writes** - Prefer UTC for `DATETIME`/`TIMESTAMP` consistency
@@ -543,6 +771,8 @@ console.log(new Date(createdAt).toLocaleString()); // Local timezone display
 5. **Use milliseconds only when needed** - Most timestamps do not require them
 
 ---
+
+## Best Practices
 
 1. **Always use parameterized queries** - Prevent SQL injection:
 
@@ -557,7 +787,7 @@ console.log(new Date(createdAt).toLocaleString()); // Local timezone display
 2. **Use connection pooling in production** - Better resource utilization:
 
    ```ts
-  const db = SqlClient.createPool({
+   const db = SqlClient.createPool({
      host: 'localhost',
      user: 'root',
      password: 'password',

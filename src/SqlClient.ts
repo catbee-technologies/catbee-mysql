@@ -181,6 +181,52 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
   }
 
   /**
+   * Create a SqlClient that executes all operations on an existing dedicated connection.
+   *
+   * @param connection - The active MySQL connection
+   * @param options - Client configuration options
+   * @returns A SqlClient instance bound exclusively to that connection
+   * @internal
+   */
+  private static fromConnection(
+    connection: Connection,
+    options: Pick<SqlClientOptions, 'defaultQueryTimeoutMs' | 'retry' | 'enforceStatementKinds'> = {}
+  ): SqlClient {
+    const connectionManager = ConnectionManager.fromConnection(connection);
+    // Pin retries to 0 so pinned operations never silently retry across sessions
+    const client = new SqlClient(connectionManager, {
+      ...options,
+      retry: { maxRetries: 0 }
+    });
+
+    // Pinned connection client lifecycle is managed by withAdvisoryLock.
+    // Prevent callers from prematurely closing or destroying the shared locked connection.
+    client.close = async (): Promise<void> => {
+      // No-op to preserve session lock integrity
+    };
+
+    client.startTransaction = async (): Promise<SqlTransaction> => {
+      throw new Error(
+        'startTransaction() is not permitted inside an advisory lock callback. Operations must remain on the locked connection.'
+      );
+    };
+
+    client.transaction = async (): Promise<never> => {
+      throw new Error(
+        'transaction() is not permitted inside an advisory lock callback. Operations must remain on the locked connection.'
+      );
+    };
+
+    client.withAdvisoryLock = async (): Promise<never> => {
+      throw new Error(
+        'withAdvisoryLock() is not permitted inside an advisory lock callback. Lock nesting is not allowed.'
+      );
+    };
+
+    return client;
+  }
+
+  /**
    * Register a middleware function that wraps every `query()` and `execute()` call.
    *
    * Middleware runs in registration order. Call `await next()` to proceed.
@@ -861,6 +907,144 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
 
     await transaction.commit();
     return result;
+  }
+
+  /**
+   * Execute an operation while holding a MySQL distributed advisory lock (`GET_LOCK`).
+   *
+   * Automatically allocates a dedicated session connection, acquires the lock with the specified
+   * timeout, executes the callback, and ensures the lock is released in a finally block.
+   *
+   * @template T - Return type of the callback
+   * @param lockName - The unique advisory lock name (up to 64 chars in MySQL)
+   * @param timeoutSeconds - Maximum seconds to wait to acquire the lock (default: 60)
+   * @param callback - The action to perform while holding the lock
+   * @returns Result of the callback
+   * @throws Error if lock acquisition times out or fails
+   *
+   * @example
+   * const result = await client.withAdvisoryLock('my_migration_lock', 30, async (db) => {
+   *   return await runCriticalSection(db);
+   * });
+   */
+  public async withAdvisoryLock<T>(
+    lockName: string,
+    timeoutSeconds: number,
+    callback: (client: SqlClient) => Promise<T>
+  ): Promise<T> {
+    if (typeof lockName !== 'string' || lockName.length === 0 || lockName.length > 64) {
+      throw new TypeError(
+        `Lock name must be a non-empty string of at most 64 characters, received length: ${
+          typeof lockName === 'string' ? lockName.length : typeof lockName
+        }`
+      );
+    }
+
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 0) {
+      throw new TypeError(`Lock timeout must be a non-negative integer, received: ${timeoutSeconds}`);
+    }
+
+    const connection = await this.connectionManager.createTransactionalConnection();
+    let lockAcquired = false;
+    let callbackResult: T | undefined;
+    let callbackError: unknown;
+    let hasCallbackError = false;
+
+    try {
+      const [rows] = await connection.query<RowDataPacket[]>('SELECT GET_LOCK(?, ?) AS lockAcquired', [
+        lockName,
+        timeoutSeconds
+      ]);
+      const row = Array.isArray(rows) && rows.length > 0 ? (rows[0] as { lockAcquired: number | null }) : undefined;
+
+      if (!row || row.lockAcquired !== 1) {
+        throw new Error(`Failed to acquire advisory lock "${lockName}" within ${timeoutSeconds}s`);
+      }
+      lockAcquired = true;
+
+      const lockedClient = SqlClient.fromConnection(connection, {
+        defaultQueryTimeoutMs: this.defaultQueryTimeoutMs,
+        enforceStatementKinds: this.enforceStatementKinds,
+        retry: { ...this.retryOptions, maxRetries: 0 }
+      });
+      for (const middleware of this.middlewares) {
+        lockedClient.use(middleware);
+      }
+
+      callbackResult = await callback(lockedClient);
+    } catch (error) {
+      callbackError = error;
+      hasCallbackError = true;
+    }
+
+    let releaseError: unknown;
+
+    if (lockAcquired) {
+      try {
+        const [rows] = await connection.query<RowDataPacket[]>('SELECT RELEASE_LOCK(?) AS released', [lockName]);
+        const released =
+          Array.isArray(rows) && rows.length > 0 ? (rows[0] as { released: number | null }).released : undefined;
+        if (released !== 1) {
+          releaseError = new Error(
+            `Failed to release advisory lock "${lockName}" (RELEASE_LOCK returned ${String(released)})`
+          );
+        }
+      } catch (err) {
+        releaseError = err;
+      }
+    }
+
+    try {
+      if (releaseError) {
+        // If lock release failed, terminate and destroy the connection immediately
+        // so the MySQL server drops the session and releases the advisory lock,
+        // rather than returning a dirty, lock-holding connection back to the pool.
+        this.connectionManager.terminateConnection(connection);
+      } else {
+        await this.releaseTransactionConnection(connection);
+      }
+    } catch (cleanupErr) {
+      this.connectionManager.terminateConnection(connection);
+
+      if (!releaseError) {
+        releaseError = cleanupErr;
+      } else if (releaseError instanceof Error) {
+        const enrichedRelease = releaseError as Error & { cause?: unknown; cleanupError?: unknown };
+        if (enrichedRelease.cause === undefined) {
+          enrichedRelease.cause = cleanupErr;
+        }
+        enrichedRelease.cleanupError = cleanupErr;
+      }
+    }
+
+    if (hasCallbackError) {
+      if (releaseError) {
+        if (callbackError instanceof Error) {
+          const enriched = callbackError as Error & { cause?: unknown; releaseError?: unknown };
+          if (enriched.cause === undefined) {
+            enriched.cause = releaseError;
+          }
+          enriched.releaseError = releaseError;
+          throw enriched;
+        }
+
+        const wrappedError = new Error(
+          `Advisory lock callback failed with non-Error: ${String(callbackError)} and lock release failed`
+        );
+        const enriched = wrappedError as Error & { cause?: unknown; releaseError?: unknown };
+        enriched.cause = callbackError;
+        enriched.releaseError = releaseError;
+        throw wrappedError;
+      }
+
+      throw callbackError;
+    }
+
+    if (releaseError) {
+      throw releaseError;
+    }
+
+    return callbackResult as T;
   }
 
   /**

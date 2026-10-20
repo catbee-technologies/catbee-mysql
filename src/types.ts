@@ -589,6 +589,19 @@ export interface SqlClientBase {
   transaction<T>(callback: (transaction: SqlTransaction) => Promise<T>, options?: TransactionOptions): Promise<T>;
 
   /**
+   * Execute an operation while holding a MySQL distributed advisory lock (`GET_LOCK`).
+   *
+   * @param lockName - The unique advisory lock name
+   * @param timeoutSeconds - Maximum seconds to wait to acquire the lock
+   * @param callback - Async function to execute while holding the lock
+   */
+  withAdvisoryLock<T>(
+    lockName: string,
+    timeoutSeconds: number,
+    callback: (client: SqlClientBase) => Promise<T>
+  ): Promise<T>;
+
+  /**
    * Close the connection or connection pool.
    */
   close(): Promise<void>;

@@ -45,3 +45,18 @@ export {
   formatDateOnly,
   formatTimeOnly
 } from './DateUtils';
+
+// Upgrade manager for schema migrations
+export {
+  UpgradeManager,
+  type MigrationStep,
+  type Migration,
+  type MigrationStatus,
+  type UpgradeManagerOptions,
+  type UpgradeLogger,
+  type UpgradeResult,
+  type UpgradeStepResult,
+  type UpgradeStatus,
+  type SchemaInitializer,
+  type SchemaInitOption
+} from './UpgradeManager';
