@@ -52,6 +52,24 @@ export class ConnectionManager {
     this.isPooled = isPooled;
   }
 
+  private isPinned = false;
+
+  /**
+   * Create a ConnectionManager that wraps an already active connection.
+   * All operations on this manager execute on this exact connection.
+   *
+   * @param connection - The active MySQL connection
+   * @param options - Optional connection options
+   * @returns A new ConnectionManager bound to the connection
+   * @internal
+   */
+  public static fromConnection(connection: Connection, options: ConnectionOptions = {}): ConnectionManager {
+    const manager = new ConnectionManager(options, false);
+    manager.primaryConnection = connection;
+    manager.isPinned = true;
+    return manager;
+  }
+
   /**
    * Returns true if this manager is configured to use a pool.
    *
@@ -246,6 +264,9 @@ export class ConnectionManager {
     }
 
     if (!this.primaryConnection) {
+      if (this.isPinned) {
+        throw new Error('Pinned connection has been closed or terminated.');
+      }
       const connection = await createConnection(this.options);
       this.attachConnectionErrorHandler(connection);
       this.primaryConnection = connection;
@@ -328,20 +349,31 @@ export class ConnectionManager {
   }
 
   /**
-   * Terminate a connection immediately when cancellation requires aborting in-flight work.
+   * Terminate a connection immediately when cancellation or failed lock release
+   * requires aborting in-flight work and preventing dirty session reuse.
+   *
+   * @param connection - The MySQL connection to destroy
+   * @internal
    */
-  private terminateConnection(connection: Connection): void {
+  public terminateConnection(connection: Connection): void {
+    if (this.primaryConnection === connection) {
+      this.primaryConnection = undefined;
+    }
+
     const destroyable = connection as Connection & {
       destroy?: () => void;
       connection?: { destroy?: () => void };
     };
 
-    if (typeof destroyable.destroy === 'function') {
-      destroyable.destroy();
-      return;
+    try {
+      if (typeof destroyable.destroy === 'function') {
+        destroyable.destroy();
+        return;
+      }
+      destroyable.connection?.destroy?.();
+    } catch {
+      // Ignore errors during emergency termination
     }
-
-    destroyable.connection?.destroy?.();
   }
 
   private attachConnectionErrorHandler(connection: Connection): void {

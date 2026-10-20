@@ -31,6 +31,8 @@ A lightweight, type-safe MySQL client for Node.js with comprehensive transaction
 - 🚀 **Connection pooling**: Built-in connection pool support for high-concurrency scenarios
 - 🔨 **Query builder**: Fluent SQL builder for common operations
 - 🏷️ **Named parameters**: Safe `:name` placeholders compiled to positional parameters
+- 🔒 **Distributed advisory locks**: Single-session `withAdvisoryLock()` with `GET_LOCK`/`RELEASE_LOCK` for cluster-wide synchronization
+- 📦 **Schema migrations & bootstrap**: Production-grade `UpgradeManager` for sequential migrations, rollbacks, and instant fresh-database bootstrap (`schemaInit`)
 - 📈 **Resilience controls**: Retry policy, timeout, and cancellation support
 - 👀 **Middleware & events**: composable `db.use()` middleware chain and `EventEmitter` for observability
 - 🎯 **Convenience methods**: `get()`, `all()`, `insert()`, `update()`, `delete()` helpers
@@ -143,6 +145,72 @@ await db.transaction(async tx => {
 });
 ```
 
+### Distributed Advisory Locks
+
+Safely synchronize distributed workloads across multiple application instances using MySQL session-scoped advisory locks (`GET_LOCK` / `RELEASE_LOCK`):
+
+```ts
+// Holds advisory lock on a dedicated connection session; releases automatically in finally
+await db.withAdvisoryLock('nightly_data_aggregation', 15, async lockedClient => {
+  // Guaranteed single-instance execution
+  await lockedClient.execute('CALL aggregate_daily_metrics()');
+});
+```
+
+### Schema Migrations & Bootstrap (UpgradeManager)
+
+Manage schema versioning with sequential integer migrations (`1, 2, 3...`) and instant fresh-database bootstrapping (`schemaInit`):
+
+```ts
+import { SqlClient, UpgradeManager } from '@catbee/mysql';
+
+const db = SqlClient.createPool({ /* ... connection options */ });
+
+const upgradeManager = new UpgradeManager(db, {
+  // Snapshot initializer: builds schema from scratch on fresh databases
+  schemaInit: {
+    version: 1,
+    create: async client => {
+      await client.execute(`
+        CREATE TABLE users (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          email VARCHAR(255) NOT NULL UNIQUE,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    }
+  },
+  // Sequential migrations for existing databases
+  migrations: [
+    {
+      version: 2,
+      name: 'add_user_roles',
+      up: async client => {
+        await client.execute('ALTER TABLE users ADD COLUMN role VARCHAR(50) DEFAULT "user";');
+      },
+      down: async client => {
+        await client.execute('ALTER TABLE users DROP COLUMN role;');
+      }
+    }
+  ]
+});
+
+// Unified deployment entrypoint:
+// Automatically bootstraps fresh databases or upgrades existing databases.
+// Concurrency-safe across multiple replicas starting simultaneously under advisory lock.
+const result = await upgradeManager.setup();
+console.log(`Current schema version: ${result.currentVersion}`);
+
+// Inspect live status:
+const status = await upgradeManager.getStatus();
+console.log(`Version: ${status.currentVersion}, Up to date: ${status.isUpToDate}`);
+
+// Manual operations:
+await upgradeManager.upgrade(); // Apply all pending migrations up to latest
+await upgradeManager.rollback(); // Roll back single most recent migration
+await upgradeManager.downgrade(1); // Roll back to target version 1
+```
+
 ### Query Builder
 
 Build SQL queries fluently:
@@ -243,6 +311,7 @@ await db.transaction(async tx => {
 - `startTransaction(): Promise<SqlTransaction>` - Start a manual transaction
 - `transaction<T>(callback: (tx: SqlTransaction) => Promise<T>): Promise<T>` - Execute callback in automatic transaction
 - `ping(): Promise<boolean>` - Check connection health
+- `withAdvisoryLock<T>(lockName: string, timeoutSeconds: number, callback: (client: SqlClient) => Promise<T>): Promise<T>` - Execute callback under a distributed MySQL advisory lock
 - `close(): Promise<void>` - Close the connection/pool
 
 ### SqlTransaction
@@ -306,6 +375,35 @@ Notes:
 - `operator` is one of `=`, `!=`, `>`, `>=`, `<`, `<=`, `LIKE`.
 - `join(type, ...)` supports `INNER`, `LEFT`, and `RIGHT`.
 - `whereIn`/`andIn`/`orIn`/`havingIn` require at least one value.
+
+### UpgradeManager
+
+Coordinates database schema evolution and initial provisioning:
+
+#### Constructor Options (`UpgradeManagerOptions`)
+
+- `tableName?: string` - Custom version tracking table name (default: `'_version'`)
+- `migrations?: MigrationStep[]` - Array of ordered migration steps
+- `lockTimeoutSeconds?: number` - Advisory lock acquisition timeout in seconds (default: `60`)
+- `autoRollbackOnFailure?: boolean` - Whether to attempt running `step.down()` if `step.up()` fails during upgrade (default: `false`)
+- `schemaInit?: SchemaInitOption` - Snapshot schema initializer for bootstrapping fresh databases
+- `logger?: UpgradeLogger` - Custom logger interface (`debug`, `info`, `warn`, `error`)
+
+#### Instance Methods
+
+- `setup(targetVersion?: number): Promise<UpgradeResult>` - Unified entrypoint: bootstraps fresh DB or upgrades existing DB under advisory lock
+- `upgrade(targetVersion?: number): Promise<UpgradeResult>` - Apply pending migrations up to target version (defaults to latest)
+- `bootstrap(targetVersion?: number): Promise<UpgradeResult>` - Directly run snapshot schema initializer on a fresh database
+- `downgrade(targetVersion: number): Promise<UpgradeResult>` - Roll back migrations down to target version in descending order
+- `rollback(): Promise<UpgradeResult>` - Roll back the single most recently applied migration
+- `getStatus(targetVersion?: number): Promise<UpgradeStatus>` - Inspect live database status (non-blocking snapshot)
+- `getCurrentVersion(): Promise<number>` - Read current version integer (returns `0` if uninitialized)
+- `isFreshDatabase(): Promise<boolean>` - Check if database contains no application tables and version 0
+- `resetFailedState(newVersion?: number): Promise<void>` - Reset version table status from `'failed'`/`'migrating'` to `'idle'`
+- `addMigration(migration: MigrationStep): this` - Register a migration step (chainable)
+- `addMigrations(migrations: MigrationStep[]): this` - Register multiple migration steps (chainable)
+- `setSchemaInit(initializer: SchemaInitOption, version?: number): this` - Set or override schema initializer (chainable)
+- `getRegisteredMigrations(): readonly MigrationStep[]` - Return sorted registered migrations
 
 ### SQL Parameter Types
 

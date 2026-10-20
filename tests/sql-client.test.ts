@@ -1468,4 +1468,284 @@ describe('SqlClient', () => {
       expect(mockedCreateConnection).toHaveBeenCalledTimes(2);
     });
   });
+
+  describe('withAdvisoryLock', () => {
+    it('validates lock name parameter', async () => {
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(client.withAdvisoryLock('', 10, async () => {})).rejects.toThrow(
+        /Lock name must be a non-empty string of at most 64 characters/
+      );
+
+      await expect(client.withAdvisoryLock('a'.repeat(65), 10, async () => {})).rejects.toThrow(
+        /Lock name must be a non-empty string of at most 64 characters/
+      );
+
+      await expect(client.withAdvisoryLock(123 as unknown as string, 10, async () => {})).rejects.toThrow(
+        /Lock name must be a non-empty string of at most 64 characters/
+      );
+    });
+
+    it('validates timeoutSeconds parameter', async () => {
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(client.withAdvisoryLock('test_lock', -1, async () => {})).rejects.toThrow(
+        /Lock timeout must be a non-negative integer/
+      );
+
+      await expect(client.withAdvisoryLock('test_lock', 1.5, async () => {})).rejects.toThrow(
+        /Lock timeout must be a non-negative integer/
+      );
+
+      await expect(client.withAdvisoryLock('test_lock', '10' as unknown as number, async () => {})).rejects.toThrow(
+        /Lock timeout must be a non-negative integer/
+      );
+    });
+
+    it('fails when GET_LOCK returns 0 (timeout)', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query.mockResolvedValueOnce([[{ lockAcquired: 0 }] as RowDataPacket[], []]);
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(client.withAdvisoryLock('test_lock', 5, async () => 'ok')).rejects.toThrow(
+        'Failed to acquire advisory lock "test_lock" within 5s'
+      );
+
+      expect(mockConn.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails when GET_LOCK returns null or empty', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(client.withAdvisoryLock('test_lock', 5, async () => 'ok')).rejects.toThrow(
+        'Failed to acquire advisory lock "test_lock" within 5s'
+      );
+
+      expect(mockConn.release).toHaveBeenCalledTimes(1);
+    });
+
+    it('successfully acquires lock, runs callback with pinned lockedClient, and releases lock', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query
+        .mockResolvedValueOnce([[{ lockAcquired: 1 }] as RowDataPacket[], []])
+        .mockResolvedValueOnce([[{ released: 1 }] as RowDataPacket[], []]);
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root',
+        retry: { maxRetries: 3 }
+      });
+
+      let capturedClient: SqlClient | undefined;
+      const result = await client.withAdvisoryLock('migration_lock', 30, async locked => {
+        capturedClient = locked;
+        await locked.close(); // No-op, should not close or release
+        return 'executed';
+      });
+
+      expect(result).toBe('executed');
+      expect(mockConn.query).toHaveBeenNthCalledWith(1, 'SELECT GET_LOCK(?, ?) AS lockAcquired', [
+        'migration_lock',
+        30
+      ]);
+      expect(mockConn.query).toHaveBeenNthCalledWith(2, 'SELECT RELEASE_LOCK(?) AS released', ['migration_lock']);
+      expect(mockConn.release).toHaveBeenCalledTimes(1);
+
+      // Verify locked client restrictions
+      expect(capturedClient).toBeDefined();
+      if (capturedClient) {
+        await expect(capturedClient.startTransaction()).rejects.toThrow(
+          'startTransaction() is not permitted inside an advisory lock callback'
+        );
+        await expect(capturedClient.transaction(async () => {})).rejects.toThrow(
+          'transaction() is not permitted inside an advisory lock callback'
+        );
+        await expect(capturedClient.withAdvisoryLock('inner', 10, async () => {})).rejects.toThrow(
+          'withAdvisoryLock() is not permitted inside an advisory lock callback'
+        );
+      }
+    });
+
+    it('terminates connection when RELEASE_LOCK returns 0 (not released)', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query
+        .mockResolvedValueOnce([[{ lockAcquired: 1 }] as RowDataPacket[], []])
+        .mockResolvedValueOnce([[{ released: 0 }] as RowDataPacket[], []]);
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(client.withAdvisoryLock('migration_lock', 30, async () => 'data')).rejects.toThrow(
+        'Failed to release advisory lock "migration_lock" (RELEASE_LOCK returned 0)'
+      );
+
+      // Must be destroyed, not released to pool
+      expect(mockConn.destroy).toHaveBeenCalledTimes(1);
+      expect(mockConn.release).not.toHaveBeenCalled();
+    });
+
+    it('attaches releaseError to callback error when callback fails and lock release fails', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query
+        .mockResolvedValueOnce([[{ lockAcquired: 1 }] as RowDataPacket[], []])
+        .mockRejectedValueOnce(new Error('Network failure on release'));
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      const callbackErr = new Error('Callback failed');
+      await expect(
+        client.withAdvisoryLock('migration_lock', 30, async () => {
+          throw callbackErr;
+        })
+      ).rejects.toThrow('Callback failed');
+
+      expect((callbackErr as Error & { cause?: unknown }).cause).toBeInstanceOf(Error);
+      expect(((callbackErr as Error & { cause?: Error }).cause as Error).message).toBe('Network failure on release');
+      expect((callbackErr as Error & { releaseError?: unknown }).releaseError).toBeInstanceOf(Error);
+      expect(mockConn.destroy).toHaveBeenCalledTimes(1);
+      expect(mockConn.release).not.toHaveBeenCalled();
+    });
+
+    it('wraps non-Error callback rejection when release fails', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query
+        .mockResolvedValueOnce([[{ lockAcquired: 1 }] as RowDataPacket[], []])
+        .mockRejectedValueOnce(new Error('Network failure on release'));
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(
+        client.withAdvisoryLock('migration_lock', 30, async () => {
+          return Promise.reject('non-error string failure');
+        })
+      ).rejects.toThrow(/Advisory lock callback failed with non-Error: non-error string failure/);
+
+      expect(mockConn.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves cleanup failure when connection release throws', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn().mockImplementation(() => {
+        throw new Error('Connection release threw');
+      });
+      mockConn.query
+        .mockResolvedValueOnce([[{ lockAcquired: 1 }] as RowDataPacket[], []])
+        .mockResolvedValueOnce([[{ released: 1 }] as RowDataPacket[], []]);
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(client.withAdvisoryLock('migration_lock', 30, async () => 'data')).rejects.toThrow(
+        'Connection release threw'
+      );
+      expect(mockConn.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('prevents silent reconnection or session switching when pinned connection fails', async () => {
+      const pool = createMockPool();
+      const mockConn = createMockConnection();
+      mockConn.release = jest.fn();
+      mockConn.query
+        .mockResolvedValueOnce([[{ lockAcquired: 1 }] as RowDataPacket[], []])
+        .mockRejectedValueOnce(Object.assign(new Error('Connection reset'), { code: 'ECONNRESET', fatal: true }))
+        .mockResolvedValueOnce([[{ released: 1 }] as RowDataPacket[], []]);
+
+      pool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(pool as unknown as Pool);
+
+      const client = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost',
+        password: 'password',
+        user: 'root'
+      });
+
+      await expect(
+        client.withAdvisoryLock('migration_lock', 30, async locked => {
+          // First query triggers fatal connection reset
+          await expect(locked.query('SELECT 1')).rejects.toThrow('Connection reset');
+          // Subsequent query must fail and NOT reconnect
+          await expect(locked.query('SELECT 2')).rejects.toThrow('Pinned connection has been closed or terminated.');
+        })
+      ).resolves.toBeUndefined();
+    });
+  });
 });
