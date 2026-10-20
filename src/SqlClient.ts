@@ -1164,9 +1164,15 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
     const maybePooledConnection = connection as Connection & {
       release?: () => void;
       destroy?: () => void;
+      connection?: { release?: () => void };
     };
 
-    if (typeof maybePooledConnection.release === 'function') {
+    if (typeof maybePooledConnection.connection?.release === 'function') {
+      maybePooledConnection.release?.();
+      return;
+    }
+
+    if (typeof maybePooledConnection.release === 'function' && !('connection' in maybePooledConnection)) {
       maybePooledConnection.release();
       return;
     }
