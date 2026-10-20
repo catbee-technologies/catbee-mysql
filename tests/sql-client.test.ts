@@ -1,42 +1,14 @@
+import {
+  createMockConnection,
+  createMockPool,
+  mockedCreateConnection,
+  mockedCreatePool
+} from './__mocks__/connection.mock';
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
-import { createConnection, createPool, PoolConnection, type Connection, type Pool } from 'mysql2/promise';
-import { SqlClient, buildQuery, compileNamedParameters } from '../src';
+import { PoolConnection, type Connection, type Pool } from 'mysql2/promise';
+import { SqlClient, compileNamedParameters } from '../src';
 import { ConnectionManager } from '../src/ConnectionManager';
 import { TransactionClient } from '../src/TransactionClient';
-
-jest.mock('mysql2/promise', () => ({
-  createConnection: jest.fn(),
-  createPool: jest.fn()
-}));
-
-type MockConnection = jest.Mocked<
-  Pick<Connection, 'beginTransaction' | 'commit' | 'end' | 'execute' | 'query' | 'rollback'>
-> & {
-  destroy?: jest.Mock;
-  release?: jest.Mock;
-};
-
-type MockPool = jest.Mocked<Pick<Pool, 'end' | 'execute' | 'getConnection' | 'query'>>;
-
-const mockedCreateConnection = jest.mocked(createConnection);
-const mockedCreatePool = jest.mocked(createPool);
-
-const createMockConnection = (): MockConnection => ({
-  beginTransaction: jest.fn().mockResolvedValue(undefined),
-  commit: jest.fn().mockResolvedValue(undefined),
-  destroy: jest.fn(),
-  end: jest.fn().mockResolvedValue(undefined),
-  execute: jest.fn(),
-  query: jest.fn(),
-  rollback: jest.fn().mockResolvedValue(undefined)
-});
-
-const createMockPool = (): MockPool => ({
-  execute: jest.fn(),
-  getConnection: jest.fn(),
-  end: jest.fn().mockResolvedValue(undefined),
-  query: jest.fn()
-});
 
 describe('SqlClient', () => {
   beforeEach(() => {
@@ -162,29 +134,6 @@ describe('SqlClient', () => {
       expect(primaryConnection.query).not.toHaveBeenCalled();
     });
 
-    it('supports CTE queries with enforceStatementKinds: true', async () => {
-      const primaryConnection = createMockConnection();
-      const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
-      primaryConnection.query.mockResolvedValue([rows, []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        enforceStatementKinds: true,
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const cteSql = 'WITH cte AS (SELECT 1 AS id) SELECT * FROM cte WHERE id = ?';
-      const result = await client.query(cteSql, [1]);
-      expect(result.rows).toEqual(rows);
-
-      await expect(client.execute(cteSql, [1])).rejects.toThrow(
-        'execute() does not support SELECT queries. Use query() instead.'
-      );
-    });
-
     it('raw() supports SELECT and returns rows', async () => {
       const primaryConnection = createMockConnection();
       const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
@@ -223,97 +172,6 @@ describe('SqlClient', () => {
       expect(primaryConnection.query).toHaveBeenCalledWith('UPDATE users SET active = ? WHERE id = ?', [true, 1]);
     });
 
-    it('gets a single row with convenience method', async () => {
-      const primaryConnection = createMockConnection();
-      const row = { id: 1, name: 'Alice' } as RowDataPacket;
-
-      primaryConnection.query.mockResolvedValue([[row], []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.get('SELECT * FROM users WHERE id = ?', [1])).resolves.toEqual(row);
-    });
-
-    it('gets all rows with convenience method', async () => {
-      const primaryConnection = createMockConnection();
-      const rows = [
-        { id: 1, name: 'Alice' },
-        { id: 2, name: 'Bob' }
-      ] as RowDataPacket[];
-
-      primaryConnection.query.mockResolvedValue([rows, []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.all('SELECT * FROM users')).resolves.toEqual(rows);
-    });
-
-    it('inserts with convenience method returning affectedRows', async () => {
-      const primaryConnection = createMockConnection();
-      const result = { affectedRows: 1, insertId: 42 } as unknown as ResultSetHeader;
-
-      primaryConnection.execute.mockResolvedValue([result, []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.insert('INSERT INTO users(name, age) VALUES(?, ?)', ['Alice', 25])).resolves.toBe(1);
-    });
-
-    it('updates with convenience method returning affectedRows', async () => {
-      const primaryConnection = createMockConnection();
-      const result = { affectedRows: 5, changedRows: 3 } as unknown as ResultSetHeader;
-
-      primaryConnection.execute.mockResolvedValue([result, []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.update('UPDATE users SET active = ? WHERE age > ?', [true, 18])).resolves.toBe(5);
-
-      // Test with returnChangedRows flag
-      await expect(client.update('UPDATE users SET active = ? WHERE age > ?', [true, 18], true)).resolves.toBe(3);
-    });
-
-    it('deletes with convenience method returning affectedRows', async () => {
-      const primaryConnection = createMockConnection();
-      const result = { affectedRows: 2 } as unknown as ResultSetHeader;
-
-      primaryConnection.execute.mockResolvedValue([result, []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.delete('DELETE FROM users WHERE id = ?', [1])).resolves.toBe(2);
-    });
-
     it('passes execution options to convenience methods (get, all, insert, update, delete)', async () => {
       const primaryConnection = createMockConnection();
       const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
@@ -336,81 +194,6 @@ describe('SqlClient', () => {
       await expect(client.insert('INSERT INTO users(name) VALUES(?)', ['Bob'], opts)).resolves.toBe(2);
       await expect(client.update('UPDATE users SET active = ?', [true], false, opts)).resolves.toBe(2);
       await expect(client.delete('DELETE FROM users WHERE id = ?', [1], opts)).resolves.toBe(2);
-    });
-
-    it('exists() returns true when rows are found', async () => {
-      const primaryConnection = createMockConnection();
-      primaryConnection.query.mockResolvedValue([[{ 1: 1 }] as unknown as RowDataPacket[], []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.exists('SELECT 1 FROM users WHERE email = ?', ['alice@example.com'])).resolves.toBe(true);
-    });
-
-    it('exists() returns false when no rows are found', async () => {
-      const primaryConnection = createMockConnection();
-      primaryConnection.query.mockResolvedValue([[] as RowDataPacket[], []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.exists('SELECT 1 FROM users WHERE email = ?', ['nobody@example.com'])).resolves.toBe(false);
-    });
-
-    it('count() returns the numeric value of the first column', async () => {
-      const primaryConnection = createMockConnection();
-      primaryConnection.query.mockResolvedValue([[{ 'COUNT(*)': 42 }] as unknown as RowDataPacket[], []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.count('SELECT COUNT(*) FROM users WHERE active = ?', [true])).resolves.toBe(42);
-    });
-
-    it('count() returns 0 when no rows are returned', async () => {
-      const primaryConnection = createMockConnection();
-      primaryConnection.query.mockResolvedValue([[] as RowDataPacket[], []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.count('SELECT COUNT(*) FROM users WHERE 1 = 0')).resolves.toBe(0);
-    });
-
-    it('ping() returns true when connection is healthy', async () => {
-      const primaryConnection = createMockConnection();
-      primaryConnection.query.mockResolvedValue([[{ 1: 1 }] as unknown as RowDataPacket[], []]);
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(client.ping()).resolves.toBe(true);
     });
 
     it('ping() returns false when connection fails', async () => {
@@ -499,60 +282,6 @@ describe('SqlClient', () => {
       expect(transactionConnection.end).toHaveBeenCalledTimes(1);
     });
 
-    it('supports isolationLevel and readOnly options on startTransaction', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-
-      transactionConnection.query.mockResolvedValue([[], []]);
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const transaction = await client.startTransaction({
-        isolationLevel: 'READ COMMITTED',
-        readOnly: true
-      });
-      await transaction.commit();
-
-      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION ISOLATION LEVEL READ COMMITTED');
-      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION READ ONLY');
-      expect(transactionConnection.beginTransaction).toHaveBeenCalledTimes(1);
-    });
-
-    it('supports readOnly: false on startTransaction', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-
-      transactionConnection.query.mockResolvedValue([[], []]);
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const transaction = await client.startTransaction({
-        isolationLevel: 'REPEATABLE READ',
-        readOnly: false
-      });
-      await transaction.commit();
-
-      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION READ WRITE');
-      expect(transactionConnection.beginTransaction).toHaveBeenCalledTimes(1);
-    });
-
     it('rejects invalid isolation levels and releases the connection', async () => {
       const primaryConnection = createMockConnection();
       const transactionConnection = createMockConnection();
@@ -576,35 +305,6 @@ describe('SqlClient', () => {
 
       expect(transactionConnection.end).toHaveBeenCalledTimes(1);
       expect(transactionConnection.beginTransaction).not.toHaveBeenCalled();
-    });
-
-    it('passes transaction options from transaction() to startTransaction()', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-
-      transactionConnection.query.mockResolvedValue([[], []]);
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const result = await client.transaction(
-        async () => {
-          return 'done';
-        },
-        { isolationLevel: 'SERIALIZABLE' }
-      );
-
-      expect(result).toBe('done');
-      expect(transactionConnection.query).toHaveBeenCalledWith('SET TRANSACTION ISOLATION LEVEL SERIALIZABLE');
-      expect(transactionConnection.beginTransaction).toHaveBeenCalledTimes(1);
-      expect(transactionConnection.commit).toHaveBeenCalledTimes(1);
     });
 
     it('releases transaction connection when beginTransaction fails', async () => {
@@ -688,64 +388,6 @@ describe('SqlClient', () => {
       expect(enrichedFailure.cause).toBe(rollbackFailure);
       expect(enrichedFailure.rollbackError).toBe(rollbackFailure);
       expect(transactionConnection.end).toHaveBeenCalledTimes(1);
-    });
-
-    it('supports convenience methods in transactions', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-      const rows = [{ id: 1, name: 'Alice' }] as RowDataPacket[];
-      const insertResult = { affectedRows: 1, insertId: 1 } as unknown as ResultSetHeader;
-
-      transactionConnection.query.mockResolvedValue([rows, []]);
-      transactionConnection.execute.mockResolvedValue([insertResult, []]);
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const affectedRows = await client.transaction(async tx => {
-        const row = await tx.get('SELECT * FROM users WHERE id = ?', [1]);
-        expect(row).toEqual(rows[0]);
-
-        const count = await tx.insert('INSERT INTO users(name) VALUES(?)', ['Bob']);
-        return count;
-      });
-
-      expect(affectedRows).toBe(1);
-      expect(transactionConnection.commit).toHaveBeenCalledTimes(1);
-    });
-
-    it('supports savepoint lifecycle in transactions', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-
-      transactionConnection.query.mockResolvedValue([[], []]);
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const tx = await client.startTransaction();
-      const savepoint = await tx.savepoint();
-      await tx.rollbackTo(savepoint);
-      await tx.releaseSavepoint(savepoint);
-      await tx.commit();
-
-      expect(transactionConnection.query).toHaveBeenCalledWith('SAVEPOINT `sp_1`');
-      expect(transactionConnection.query).toHaveBeenCalledWith('ROLLBACK TO SAVEPOINT `sp_1`');
-      expect(transactionConnection.query).toHaveBeenCalledWith('RELEASE SAVEPOINT `sp_1`');
     });
 
     it('supports releaseSavepoint with explicit names', async () => {
@@ -859,33 +501,6 @@ describe('SqlClient', () => {
       await expect(tx.query('SELECT 1')).rejects.toThrow('Transaction has already been completed');
     });
 
-    it('supports update and delete helpers inside a transaction', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-
-      transactionConnection.execute
-        .mockResolvedValueOnce([{ affectedRows: 3, changedRows: 2 } as unknown as ResultSetHeader, []])
-        .mockResolvedValueOnce([{ affectedRows: 4, changedRows: 4 } as unknown as ResultSetHeader, []])
-        .mockResolvedValueOnce([{ affectedRows: 5 } as unknown as ResultSetHeader, []]);
-
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const tx = await client.startTransaction();
-      await expect(tx.update('UPDATE users SET active = 1')).resolves.toBe(3);
-      await expect(tx.update('UPDATE users SET active = 1', [], true)).resolves.toBe(4);
-      await expect(tx.delete('DELETE FROM users WHERE id > 0')).resolves.toBe(5);
-      await tx.rollback();
-    });
-
     it('allows Buffer parameters inside transactions', async () => {
       const primaryConnection = createMockConnection();
       const transactionConnection = createMockConnection();
@@ -910,33 +525,6 @@ describe('SqlClient', () => {
       expect(transactionConnection.execute).toHaveBeenCalledWith('UPDATE users SET avatar = ? WHERE id = 1', [
         Buffer.from('x')
       ]);
-      await tx.rollback();
-    });
-
-    it('supports exists() and count() helpers inside a transaction', async () => {
-      const primaryConnection = createMockConnection();
-      const transactionConnection = createMockConnection();
-
-      transactionConnection.query
-        .mockResolvedValueOnce([[{ 1: 1 }] as unknown as RowDataPacket[], []])
-        .mockResolvedValueOnce([[] as RowDataPacket[], []])
-        .mockResolvedValueOnce([[{ 'COUNT(*)': 7 }] as unknown as RowDataPacket[], []]);
-
-      mockedCreateConnection
-        .mockResolvedValueOnce(primaryConnection as unknown as Connection)
-        .mockResolvedValueOnce(transactionConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const tx = await client.startTransaction();
-      await expect(tx.exists('SELECT 1 FROM users WHERE id = ?', [1])).resolves.toBe(true);
-      await expect(tx.exists('SELECT 1 FROM users WHERE id = ?', [999])).resolves.toBe(false);
-      await expect(tx.count('SELECT COUNT(*) FROM users WHERE active = ?', [true])).resolves.toBe(7);
       await tx.rollback();
     });
   });
@@ -983,12 +571,12 @@ describe('SqlClient', () => {
         user: 'root'
       });
 
-      client.use(async (ctx, next) => {
+      client.use(async (_ctx, next) => {
         order.push('A:before');
         await next();
         order.push('A:after');
       });
-      client.use(async (ctx, next) => {
+      client.use(async (_ctx, next) => {
         order.push('B:before');
         await next();
         order.push('B:after');
@@ -1878,275 +1466,6 @@ describe('SqlClient', () => {
       expect(firstConnection.destroy).toHaveBeenCalledTimes(1);
       expect(firstConnection.execute).toHaveBeenCalledTimes(1);
       expect(mockedCreateConnection).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('Query Builder', () => {
-    it('builds SELECT queries', () => {
-      const query = buildQuery()
-        .select('id', 'name', 'email')
-        .from('users')
-        .where('age', '>', 18)
-        .orderBy('name', 'ASC')
-        .limit(10);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('SELECT id, name, email');
-      expect(sql).toContain('FROM `users`');
-      expect(sql).toContain('WHERE `age` > ?');
-      expect(sql).toContain('ORDER BY `name` ASC');
-      expect(sql).toContain('LIMIT 10');
-      expect(parameters).toEqual([18]);
-    });
-
-    it('builds INSERT queries', () => {
-      const query = buildQuery().insert('users', {
-        name: 'Alice',
-        email: 'alice@example.com',
-        age: 25
-      });
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('INSERT INTO `users`');
-      expect(sql).toContain('name');
-      expect(sql).toContain('email');
-      expect(sql).toContain('age');
-      expect(parameters).toContain('Alice');
-      expect(parameters).toContain('alice@example.com');
-      expect(parameters).toContain(25);
-    });
-
-    it('builds UPDATE queries with WHERE clause', () => {
-      const query = buildQuery().update('users', { active: true, age: 30 }).where('id', '=', 1);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('UPDATE `users` SET');
-      expect(sql).toContain('WHERE `id` = ?');
-      expect(parameters).toEqual([true, 30, 1]);
-    });
-
-    it('builds DELETE queries', () => {
-      const query = buildQuery().delete('users').where('id', '>', 100);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('DELETE FROM `users`');
-      expect(sql).toContain('WHERE `id` > ?');
-      expect(parameters).toEqual([100]);
-    });
-
-    it('chains AND and OR conditions', () => {
-      const query = buildQuery()
-        .select('*')
-        .from('users')
-        .where('age', '>', 18)
-        .and('active', '=', true)
-        .or('role', '=', 'admin');
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('WHERE `age` > ?');
-      expect(sql).toContain('AND `active` = ?');
-      expect(sql).toContain('OR `role` = ?');
-      expect(parameters).toEqual([18, true, 'admin']);
-    });
-
-    it('supports GROUP BY and HAVING', () => {
-      const query = buildQuery()
-        .select('role', 'COUNT(*) as count')
-        .from('users')
-        .groupBy('role')
-        .having('count', '>', 5);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('GROUP BY `role`');
-      expect(sql).toContain('HAVING `count` > ?');
-      expect(parameters).toEqual([5]);
-    });
-
-    it('supports JOINs', () => {
-      const query = buildQuery()
-        .select('u.id', 'u.name', 'p.title')
-        .from('users u')
-        .join('INNER', 'posts p', 'u.id = p.user_id');
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('FROM `users` `u`');
-      expect(sql).toContain('INNER JOIN `posts` `p` ON u.id = p.user_id');
-      expect(parameters).toEqual([]);
-    });
-
-    it('escapes qualified identifiers for ORDER BY and GROUP BY', () => {
-      const query = buildQuery().select('*').from('users u').orderBy('u.created_at', 'DESC').groupBy('u.role');
-
-      const { sql } = query.build();
-      expect(sql).toContain('ORDER BY `u`.`created_at` DESC');
-      expect(sql).toContain('GROUP BY `u`.`role`');
-    });
-
-    it('can reset the query builder', () => {
-      const query = buildQuery()
-        .select('*')
-        .from('users')
-        .reset()
-        .insert('posts', { title: 'Hello', content: 'World' });
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('INSERT INTO `posts`');
-      expect(sql).not.toContain('SELECT');
-      expect(parameters).toContain('Hello');
-      expect(parameters).toContain('World');
-    });
-
-    it('supports getSql and getParameters helpers', () => {
-      const query = buildQuery().select('*').from('users').where('id', '=', 1).offset(5);
-
-      expect(query.getSql()).toContain('OFFSET 5');
-      expect(query.getParameters()).toEqual([1]);
-    });
-
-    it('supports typed IN and BETWEEN predicates', () => {
-      const query = buildQuery()
-        .select('*')
-        .from('users')
-        .whereIn('role', ['admin', 'editor'])
-        .andBetween('age', 18, 40)
-        .havingIn('role', ['admin']);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('WHERE `role` IN (?, ?)');
-      expect(sql).toContain('AND `age` BETWEEN ? AND ?');
-      expect(sql).toContain('HAVING `role` IN (?)');
-      expect(parameters).toEqual(['admin', 'editor', 18, 40, 'admin']);
-    });
-
-    it('supports orIn, orBetween, and havingBetween predicates', () => {
-      const query = buildQuery()
-        .select('*')
-        .from('users')
-        .where('active', '=', true)
-        .orIn('role', ['admin', 'editor'])
-        .orBetween('age', 60, 90)
-        .groupBy('role')
-        .havingBetween('created_count', 1, 3);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('OR `role` IN (?, ?)');
-      expect(sql).toContain('OR `age` BETWEEN ? AND ?');
-      expect(sql).toContain('HAVING `created_count` BETWEEN ? AND ?');
-      expect(parameters).toEqual([true, 'admin', 'editor', 60, 90, 1, 3]);
-    });
-
-    it('supports whereBetween, and, andIn predicates together', () => {
-      const query = buildQuery()
-        .select('*')
-        .from('users')
-        .whereBetween('age', 18, 30)
-        .and('active', '=', true)
-        .andIn('country', ['US', 'IN']);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toContain('WHERE `age` BETWEEN ? AND ?');
-      expect(sql).toContain('AND `active` = ?');
-      expect(sql).toContain('AND `country` IN (?, ?)');
-      expect(parameters).toEqual([18, 30, true, 'US', 'IN']);
-    });
-
-    it('covers SqlClient internal release fallback when end fails', async () => {
-      const primaryConnection = createMockConnection();
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      const failingConnection = createMockConnection();
-      const fallbackDestroy = jest.fn();
-      failingConnection.end.mockRejectedValue(new Error('end failed'));
-      failingConnection.destroy = fallbackDestroy;
-
-      await expect(
-        (
-          client as unknown as {
-            releaseTransactionConnection: (connection: Connection) => Promise<void>;
-          }
-        ).releaseTransactionConnection(failingConnection as unknown as Connection)
-      ).resolves.toBeUndefined();
-
-      expect(failingConnection.end).toHaveBeenCalledTimes(1);
-      expect(fallbackDestroy).toHaveBeenCalledTimes(1);
-    });
-
-    it('covers SqlClient internal delay helper', async () => {
-      const primaryConnection = createMockConnection();
-      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
-
-      const client = await SqlClient.create({
-        database: 'test',
-        host: 'localhost',
-        password: 'password',
-        user: 'root'
-      });
-
-      await expect(
-        (
-          client as unknown as {
-            delay: (ms: number) => Promise<void>;
-          }
-        ).delay(0)
-      ).resolves.toBeUndefined();
-    });
-
-    it('throws when IN predicates are called with empty value lists', () => {
-      expect(() => buildQuery().select('*').from('users').whereIn('id', [])).toThrow(
-        'WHERE IN requires at least one value'
-      );
-    });
-
-    it('throws for invalid table reference with extra tokens', () => {
-      expect(() => buildQuery().select('*').from('users u extra')).toThrow('Invalid table reference');
-    });
-
-    it('escapes identifiers containing backticks', () => {
-      const { sql } = buildQuery().insert('my`table', { 'na`me': 'Alice' }).build();
-      expect(sql).toContain('`my``table`');
-      expect(sql).toContain('`na``me`');
-    });
-
-    it('escapes table references with qualified names and alias', () => {
-      const { sql } = buildQuery().select('*').from('app.users u').build();
-      expect(sql).toContain('FROM `app`.`users` `u`');
-    });
-
-    it('supports table references with optional AS keyword for alias', () => {
-      const { sql: sqlFrom } = buildQuery().select('*').from('users AS u').build();
-      expect(sqlFrom).toBe('SELECT * FROM `users` `u`');
-
-      const { sql: sqlJoin } = buildQuery()
-        .select('u.id', 'p.title')
-        .from('schema.users as u')
-        .join('LEFT', 'schema.posts AS p', 'u.id = p.user_id')
-        .build();
-      expect(sqlJoin).toBe(
-        'SELECT u.id, p.title FROM `schema`.`users` `u` LEFT JOIN `schema`.`posts` `p` ON u.id = p.user_id'
-      );
-    });
-
-    it('automatically uses AND when where(), whereIn(), or whereBetween() are called repeatedly', () => {
-      const query = buildQuery()
-        .select('*')
-        .from('users')
-        .where('age', '>', 18)
-        .where('active', '=', true)
-        .whereIn('role', ['admin', 'editor'])
-        .whereBetween('score', 80, 100);
-
-      const { sql, parameters } = query.build();
-      expect(sql).toBe(
-        'SELECT * FROM `users` WHERE `age` > ? AND `active` = ? AND `role` IN (?, ?) AND `score` BETWEEN ? AND ?'
-      );
-      expect(parameters).toEqual([18, true, 'admin', 'editor', 80, 100]);
     });
   });
 });

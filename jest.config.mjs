@@ -24,8 +24,8 @@ export default {
     '^@catbee/mysql/(.*)$': '<rootDir>/src/$1'
   },
   modulePathIgnorePatterns: ['<rootDir>/dist/'],
-  testMatch: ['**/tests/**/*.test.ts'],
-  coveragePathIgnorePatterns: ['index.ts', 'src/types', 'src/servers/server.ts'],
+  testMatch: ['<rootDir>/tests/**/*.test.ts', '<rootDir>/tests-tc/**/*.test.ts'],
+  coveragePathIgnorePatterns: ['index.ts', 'src/types'],
   testResultsProcessor: 'jest-sonar-reporter',
   detectOpenHandles: true,
   setupFilesAfterEnv: ['<rootDir>/tests/__mocks__/default.mock.ts'],

@@ -115,7 +115,8 @@
   },
   "include": [
     "src/**/*.ts",
-    "test/**/*.ts"
+    "tests/**/*.ts",
+    "tests-tc/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
