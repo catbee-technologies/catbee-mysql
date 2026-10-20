@@ -1278,6 +1278,18 @@ describe('SqlClient', () => {
       expect(compiled.sql).toContain('1- -1');
       expect(compiled.parameters).toEqual([5]);
     });
+
+    it('correctly handles strings ending with escaped backslashes', () => {
+      const compiled = compileNamedParameters(
+        'SELECT * FROM files WHERE dir = \'C:\\\\\' AND user_id = :id AND ext = "foo\\\\" AND active = :active',
+        { id: 10, active: true }
+      );
+
+      expect(compiled.sql).toBe(
+        'SELECT * FROM files WHERE dir = \'C:\\\\\' AND user_id = ? AND ext = "foo\\\\" AND active = ?'
+      );
+      expect(compiled.parameters).toEqual([10, true]);
+    });
   });
 
   describe('Connection Pooling', () => {

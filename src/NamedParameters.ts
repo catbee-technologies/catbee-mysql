@@ -13,6 +13,16 @@ export interface CompiledNamedQuery {
   parameters: SqlParameters;
 }
 
+function isEscapedByBackslash(str: string, index: number): boolean {
+  let backslashCount = 0;
+  let p = index - 1;
+  while (p >= 0 && str[p] === '\\') {
+    backslashCount++;
+    p--;
+  }
+  return backslashCount % 2 !== 0;
+}
+
 /**
  * Compile named placeholders like :userId into positional ? parameters.
  *
@@ -37,7 +47,7 @@ export function compileNamedParameters(sql: string, namedParameters: NamedSqlPar
         i += 2;
         continue;
       }
-      if (char === "'" && sql[i - 1] !== '\\') {
+      if (char === "'" && !isEscapedByBackslash(sql, i)) {
         state = 'normal';
       }
       i += 1;
@@ -51,7 +61,7 @@ export function compileNamedParameters(sql: string, namedParameters: NamedSqlPar
         i += 2;
         continue;
       }
-      if (char === '"' && sql[i - 1] !== '\\') {
+      if (char === '"' && !isEscapedByBackslash(sql, i)) {
         state = 'normal';
       }
       i += 1;
