@@ -2306,7 +2306,7 @@ describe('SqlClient', () => {
       const client = await SqlClient.create({
         database: 'test',
         host: 'localhost',
-        retry: { maxRetries: 2, initialDelayMs: 1, maxDelayMs: 5 }
+        retry: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 5 }
       });
 
       const retryableError = Object.assign(new Error('Connection lost'), { code: 'PROTOCOL_CONNECTION_LOST' });
