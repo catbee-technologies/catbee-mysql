@@ -1,11 +1,7 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended", "group:monorepos"],
-  "onboarding": true,
-  "onboardingConfig": {
-    "extends": ["config:recommended"]
-  },
-  "timezone": "Asia/Kolkata",
+  "timezone": "UTC",
   "prHourlyLimit": 5,
   "prConcurrentLimit": 5,
   "packageRules": [
@@ -22,31 +18,28 @@
     {
       "groupName": "eslint packages",
       "matchPackageNames": [
-        "^eslint", 
-        "^@eslint", 
-        "^@docusaurus/eslint-plugin", 
-        "^@typescript-eslint",
-        "^typescript-eslint", 
-        "eslint-.*", 
-        "eslint-plugin-.*"
+        "eslint**",
+        "@eslint/**",
+        "@typescript-eslint/**",
+        "typescript-eslint",
+        "eslint-**"
       ]
     },
     {
       "groupName": "jest packages",
-      "matchPackageNames": ["^jest", "^ts-jest", "^jest-", "^@types/jest"]
+      "matchPackageNames": ["jest**", "ts-jest", "@types/jest", "@jest/**"]
     },
     {
       "groupName": "catbee packages",
-      "matchPackageNames": ["^@catbee"]
+      "matchPackageNames": ["@catbee/**"]
     },
     {
       "groupName": "ng catbee packages",
-      "matchPackageNames": ["^@ng-catbee"]
+      "matchPackageNames": ["@ng-catbee/**"]
     }
   ],
   "addLabels": ["type: dependencies", "status: needs-review"],
   "reviewers": ["catbee-technologies/catbee-admins"],
-  "assignees": ["catbee-technologies/catbee-admins"],
   "branchPrefix": "dependency/",
   "rangeStrategy": "bump",
   "rebaseWhen": "behind-base-branch",
