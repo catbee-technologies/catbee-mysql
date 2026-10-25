@@ -97,6 +97,12 @@ describe('Date Utilities', () => {
       expect(() => parseMysqlDateTime('2024-01-15')).toThrow('Invalid MySQL DATETIME format');
       expect(() => parseMysqlDateTime('not a date')).toThrow('Invalid MySQL DATETIME format');
       expect(() => parseMysqlDateTime('2024-13-01 12:30:45')).toThrow('Invalid month');
+      expect(() => parseMysqlDateTime('2024-02-30 12:00:00')).toThrow('does not represent a valid calendar date/time');
+    });
+
+    it('parses MySQL TIMESTAMP strings using parseMysqlTimestamp', () => {
+      const ts = parseMysqlTimestamp('2024-01-15 12:30:45');
+      expect(ts.toISOString()).toBe('2024-01-15T12:30:45.000Z');
     });
 
     it('throws error for impossible calendar dates', () => {
@@ -147,6 +153,12 @@ describe('Date Utilities', () => {
       expect(() => parseMysqlDate('2024-13-15')).toThrow('Invalid month');
       expect(() => parseMysqlDate('2024-01-00')).toThrow('Invalid day');
       expect(() => parseMysqlDate('2024-01-32')).toThrow('Invalid day');
+      expect(() => parseMysqlDate('2024-02-30')).toThrow('does not represent a valid calendar date');
+    });
+
+    it('parses valid MySQL DATE string to Date object', () => {
+      const parsed = parseMysqlDate('2024-01-15');
+      expect(parsed.toISOString()).toBe('2024-01-15T00:00:00.000Z');
     });
   });
 

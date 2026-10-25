@@ -1,5 +1,5 @@
 import { MySqlContainer, type StartedMySqlContainer } from '@testcontainers/mysql';
-import { SqlClient, buildQuery, parseMysqlDateTime } from '../src';
+import { SqlClient, buildQuery, parseMysqlDateTime, raw } from '../src';
 import type { RowDataPacket } from 'mysql2';
 
 describe('MySQL Testcontainers Integration', () => {
@@ -50,9 +50,12 @@ describe('MySQL Testcontainers Integration', () => {
     await client.execute('TRUNCATE TABLE test_users;');
   });
 
-  it('verifies ping and basic connection', async () => {
+  it('verifies ping, direct connection, and configuration on single connection', async () => {
     const isAlive = await client.ping();
     expect(isAlive).toBe(true);
+    expect(client.config.database).toBe(container.getDatabase());
+    const directConn = await client.getConnection();
+    expect(directConn).toBeDefined();
   });
 
   it('performs CRUD operations with type safety and affected rows', async () => {
@@ -700,6 +703,162 @@ describe('MySQL Testcontainers Integration', () => {
         await Promise.all([q1, q2]);
       } finally {
         await strictPool.close();
+      }
+    });
+
+    it('provides driver escape hatch, helper formatting, and direct connection acquisition against real MySQL', async () => {
+      const poolClient = SqlClient.createPool({
+        host: container.getHost(),
+        port: container.getPort(),
+        user: container.getUsername(),
+        password: container.getUserPassword(),
+        database: container.getDatabase(),
+        connectionLimit: 3
+      });
+
+      try {
+        // 1. Verify config property
+        expect(poolClient.config.database).toBe(container.getDatabase());
+        expect(poolClient.config.port).toBe(container.getPort());
+
+        // 2. Verify getPool() returns active driver pool
+        const rawPool = poolClient.getPool();
+        expect(rawPool).toBeDefined();
+
+        // 3. Acquire direct connection, run query, and release back to pool
+        const conn = await poolClient.getConnection();
+        const [rows] = await conn.query<RowDataPacket[]>('SELECT 1 + 1 AS sum');
+        expect(rows[0].sum).toBe(2);
+        poolClient.releaseConnection(conn);
+
+        // 4. Format and execute query safely with escape and escapeId
+        await poolClient.insert('INSERT INTO test_users(name, email, created_at) VALUES(?, ?, ?)', [
+          'Test User',
+          'test@example.com',
+          '2026-10-25 12:00:00'
+        ]);
+        const formattedSql = poolClient.format('SELECT ?? FROM ?? WHERE ?? = ?', [
+          'name',
+          'test_users',
+          'email',
+          'test@example.com'
+        ]);
+        const res = await poolClient.query<RowDataPacket[]>(formattedSql);
+        expect(res.rows[0].name).toBe('Test User');
+      } finally {
+        await poolClient.close();
+      }
+    });
+
+    it('cleanly closes pool connection using [Symbol.asyncDispose]()', async () => {
+      const poolClient = SqlClient.createPool({
+        host: container.getHost(),
+        port: container.getPort(),
+        user: container.getUsername(),
+        password: container.getUserPassword(),
+        database: container.getDatabase(),
+        connectionLimit: 2
+      });
+
+      const res = await poolClient.query<RowDataPacket[]>('SELECT 42 AS answer');
+      expect(res.rows[0].answer).toBe(42);
+
+      const closeSpy = jest.spyOn(poolClient, 'close');
+      await poolClient[Symbol.asyncDispose]();
+
+      expect(closeSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('formats unquoted expressions with raw() and rawSql(), and forwards pool lifecycle events', async () => {
+      const poolClient = SqlClient.createPool({
+        host: container.getHost(),
+        port: container.getPort(),
+        user: container.getUsername(),
+        password: container.getUserPassword(),
+        database: container.getDatabase(),
+        connectionLimit: 2
+      });
+
+      const acquiredEvents: unknown[] = [];
+      const releasedEvents: unknown[] = [];
+      poolClient.on('acquire', conn => acquiredEvents.push(conn));
+      poolClient.on('release', conn => releasedEvents.push(conn));
+
+      try {
+        // Test rawSql() and raw()
+        const formatted = poolClient.format('SELECT ? AS unquoted, ? AS quoted', [poolClient.rawSql('NOW()'), 'NOW()']);
+        expect(formatted).toBe("SELECT NOW() AS unquoted, 'NOW()' AS quoted");
+
+        const formattedTopLevel = poolClient.format('SELECT ? AS val', [raw('1 + 1')]);
+        expect(formattedTopLevel).toBe('SELECT 1 + 1 AS val');
+
+        const staticRawFormatted = poolClient.format('SELECT ? AS val', [SqlClient.raw('CURRENT_DATE()')]);
+        expect(staticRawFormatted).toBe('SELECT CURRENT_DATE() AS val');
+
+        // Execute query through poolClient to trigger pool lifecycle events
+        const queryRes = await poolClient.query<RowDataPacket[]>(formattedTopLevel);
+        expect(queryRes.rows[0].val).toBe(2);
+
+        expect(acquiredEvents.length).toBeGreaterThanOrEqual(1);
+        expect(releasedEvents.length).toBeGreaterThanOrEqual(1);
+      } finally {
+        await poolClient.close();
+      }
+    });
+
+    it('handles unprepare, reset, and destroy on single connection, and rejects invalid pool resets', async () => {
+      // 1. Single connection client
+      const singleConn = await SqlClient.create({
+        host: container.getHost(),
+        port: container.getPort(),
+        user: container.getUsername(),
+        password: container.getUserPassword(),
+        database: container.getDatabase()
+      });
+
+      try {
+        const initial = await singleConn.query<RowDataPacket[]>('SELECT 100 AS num');
+        expect(initial.rows[0].num).toBe(100);
+
+        // unprepare works cleanly
+        singleConn.unprepare('SELECT 100 AS num');
+
+        // reset clears session state successfully
+        await singleConn.reset();
+
+        const afterReset = await singleConn.query<RowDataPacket[]>('SELECT 200 AS num');
+        expect(afterReset.rows[0].num).toBe(200);
+
+        // destroy terminates connection immediately
+        singleConn.destroy();
+      } catch (err) {
+        await singleConn.close().catch(() => {});
+        throw err;
+      }
+
+      // 2. Pool client guard for changeUser and reset
+      const poolClient = SqlClient.createPool({
+        host: container.getHost(),
+        port: container.getPort(),
+        user: container.getUsername(),
+        password: container.getUserPassword(),
+        database: container.getDatabase(),
+        connectionLimit: 1
+      });
+
+      try {
+        await expect(poolClient.changeUser({ database: 'information_schema' })).rejects.toThrow(
+          /changeUser\(\) cannot be invoked directly on a pooled SqlClient/i
+        );
+
+        await expect(poolClient.reset()).rejects.toThrow(/reset\(\) cannot be invoked directly on a pooled SqlClient/i);
+
+        // Direct connection from pool allows reset and changeUser
+        const conn = await poolClient.getConnection();
+        await conn.reset();
+        poolClient.releaseConnection(conn);
+      } finally {
+        await poolClient.close();
       }
     });
   });

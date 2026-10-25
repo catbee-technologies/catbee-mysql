@@ -21,8 +21,18 @@ import { ConnectionManager } from './ConnectionManager';
 import { TransactionClient } from './TransactionClient';
 import { compileNamedParameters } from './NamedParameters';
 import { assertSupportedSqlParameters } from './SqlParameterValidation';
-import type { ResultSetHeader, RowDataPacket } from 'mysql2';
-import type { Connection } from 'mysql2/promise';
+import {
+  escape,
+  escapeId,
+  format,
+  raw,
+  type ConnectionOptions,
+  type Raw,
+  type ResultSetHeader,
+  type RowDataPacket,
+  type SqlValue as DriverSqlValue
+} from 'mysql2';
+import type { Connection, Pool, PoolConnection } from 'mysql2/promise';
 
 /**
  * Main SQL client for executing queries, statements, and transactions
@@ -64,6 +74,7 @@ import type { Connection } from 'mysql2/promise';
 export class SqlClient extends EventEmitter implements SqlClientBase {
   /** Internal connection manager handling the actual connections */
   private readonly connectionManager: ConnectionManager;
+  private readonly options: Readonly<SqlClientOptions | PoolOptions>;
   private readonly enforceStatementKinds: boolean;
   private readonly defaultQueryTimeoutMs?: number;
   private readonly retryOptions: Required<RetryOptions>;
@@ -73,14 +84,17 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
   /**
    * Private constructor. Use `create()` or `createPool()` instead.
    * @param connectionManager - The internal connection manager
+   * @param options - Client or pool configuration options
    * @internal
    */
-  private constructor(
-    connectionManager: ConnectionManager,
-    options: Pick<SqlClientOptions, 'defaultQueryTimeoutMs' | 'retry' | 'enforceStatementKinds'>
-  ) {
+  private constructor(connectionManager: ConnectionManager, options: SqlClientOptions | PoolOptions) {
     super();
     this.connectionManager = connectionManager;
+    this.connectionManager.setEventEmitter(this);
+    this.options = Object.freeze({
+      timezone: 'Z',
+      ...options
+    });
     this.enforceStatementKinds = options.enforceStatementKinds === true;
     this.defaultQueryTimeoutMs = options.defaultQueryTimeoutMs;
 
@@ -190,7 +204,7 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    */
   private static fromConnection(
     connection: Connection,
-    options: Pick<SqlClientOptions, 'defaultQueryTimeoutMs' | 'retry' | 'enforceStatementKinds'> = {}
+    options: SqlClientOptions | PoolOptions = {} as SqlClientOptions
   ): SqlClient {
     const connectionManager = ConnectionManager.fromConnection(connection);
     // Pin retries to 0 so pinned operations never silently retry across sessions
@@ -203,6 +217,22 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
     // Prevent callers from prematurely closing or destroying the shared locked connection.
     client.close = async (): Promise<void> => {
       // No-op to preserve session lock integrity
+    };
+
+    client.destroy = (): void => {
+      // No-op to preserve session lock integrity
+    };
+
+    client.reset = async (): Promise<void> => {
+      throw new Error(
+        'reset() is not permitted inside an advisory lock callback. Operations must remain on the locked connection.'
+      );
+    };
+
+    client.changeUser = async (): Promise<void> => {
+      throw new Error(
+        'changeUser() is not permitted inside an advisory lock callback. Operations must remain on the locked connection.'
+      );
     };
 
     client.startTransaction = async (): Promise<SqlTransaction> => {
@@ -1082,6 +1112,228 @@ export class SqlClient extends EventEmitter implements SqlClientBase {
    */
   public async close(): Promise<void> {
     await this.connectionManager.close();
+  }
+
+  /**
+   * Explicit resource management support (`await using db = ...`).
+   * Automatically closes the client when exiting the block scope.
+   *
+   * @example
+   * {
+   *   await using db = SqlClient.createPool(options);
+   *   const users = await db.query('SELECT * FROM users');
+   * } // db.close() is automatically called here
+   */
+  public async [Symbol.asyncDispose](): Promise<void> {
+    await this.close();
+  }
+
+  /**
+   * Get the client configuration options.
+   */
+  public get config(): Readonly<SqlClientOptions | PoolOptions> {
+    return this.options;
+  }
+
+  /**
+   * Safely format a SQL query by replacing `?` with escaped values and `??` with escaped identifiers.
+   *
+   * @param sql - SQL query template
+   * @param values - Values to interpolate into the template
+   * @returns Formatted SQL query string
+   *
+   * @example
+   * const sql = db.format('SELECT * FROM ?? WHERE id = ?', ['users', 42]);
+   * // 'SELECT * FROM `users` WHERE id = 42'
+   */
+  public format(sql: string, values?: DriverSqlValue | DriverSqlValue[]): string {
+    return format(sql, values, undefined, this.options.timezone ?? 'Z');
+  }
+
+  /**
+   * Escape an arbitrary value for safe inclusion in a SQL statement.
+   *
+   * @param value - Value to escape
+   * @returns Escaped SQL string
+   *
+   * @example
+   * const safe = db.escape("O'Reilly");
+   * // "'O\\'Reilly'"
+   */
+  public escape(value: DriverSqlValue): string {
+    return escape(value, undefined, this.options.timezone ?? 'Z');
+  }
+
+  /**
+   * Escape an identifier (column name, table name, or array of names).
+   *
+   * @param value - Identifier name or array of identifier names
+   * @returns Escaped identifier string
+   *
+   * @example
+   * const table = db.escapeId('user-table');
+   * // '`user-table`'
+   */
+  public escapeId(value: DriverSqlValue): string {
+    return escapeId(value);
+  }
+
+  /**
+   * Static helper to format a SQL query.
+   *
+   * @param sql - SQL query template
+   * @param values - Values to interpolate into the template
+   * @param timeZone - Timezone to use for dates (default: 'Z')
+   * @returns Formatted SQL query string
+   */
+  public static format(sql: string, values?: DriverSqlValue | DriverSqlValue[], timeZone = 'Z'): string {
+    return format(sql, values, undefined, timeZone);
+  }
+
+  /**
+   * Static helper to escape an arbitrary value.
+   *
+   * @param value - Value to escape
+   * @param timeZone - Timezone to use for dates (default: 'Z')
+   * @returns Escaped SQL string
+   */
+  public static escape(value: DriverSqlValue, timeZone = 'Z'): string {
+    return escape(value, undefined, timeZone);
+  }
+
+  /**
+   * Static helper to escape an identifier.
+   *
+   * @param value - Identifier name or array of identifier names
+   * @returns Escaped identifier string
+   */
+  public static escapeId(value: DriverSqlValue): string {
+    return escapeId(value);
+  }
+
+  /**
+   * Get the underlying mysql2 Pool instance when operating in connection pool mode.
+   *
+   * @returns Underlying mysql2 Promise Pool instance
+   * @throws Error if client is in single-connection mode
+   *
+   * @example
+   * const rawPool = db.getPool();
+   */
+  public getPool(): Pool {
+    return this.connectionManager.getPool();
+  }
+
+  /**
+   * Acquire a direct connection.
+   *
+   * When in pool mode, acquires a connection from the pool that must be released
+   * via `connection.release()` or `client.releaseConnection(connection)`.
+   * When in single connection mode, returns the primary connection.
+   *
+   * @returns Direct connection object
+   *
+   * @example
+   * const conn = await db.getConnection();
+   * try {
+   *   // use raw connection...
+   * } finally {
+   *   db.releaseConnection(conn);
+   * }
+   */
+  public async getConnection(): Promise<PoolConnection | Connection> {
+    return this.connectionManager.getConnection();
+  }
+
+  /**
+   * Release an acquired connection back to the pool.
+   *
+   * @param connection - Connection previously acquired via `getConnection()`
+   */
+  public releaseConnection(connection: PoolConnection | Connection): void {
+    this.connectionManager.releaseConnection(connection);
+  }
+
+  /**
+   * Return a raw SQL string to be embedded in `format()` without being escaped.
+   *
+   * @param sql - Raw SQL string
+   * @returns Raw object
+   *
+   * @example
+   * db.format('UPDATE users SET updated_at = ? WHERE id = ?', [SqlClient.raw('NOW()'), 1]);
+   */
+  public static raw(sql: string): Raw {
+    return raw(sql);
+  }
+
+  /**
+   * Return a raw SQL string to be embedded in `format()` without being escaped.
+   *
+   * @param sql - Raw SQL string
+   * @returns Raw object
+   *
+   * @example
+   * db.format('UPDATE users SET updated_at = ? WHERE id = ?', [db.rawSql('NOW()'), 1]);
+   */
+  public rawSql(sql: string): Raw {
+    return raw(sql);
+  }
+
+  /**
+   * Immediately destroy the active connection or connection pool without waiting for in-flight queries.
+   */
+  public destroy(): void {
+    this.connectionManager.destroy();
+  }
+
+  /**
+   * Deallocate a prepared statement on the persistent connection.
+   *
+   * @param sql - The SQL query string or options previously prepared
+   */
+  public unprepare(sql: string): void {
+    this.connectionManager.unprepare(sql);
+  }
+
+  /**
+   * Re-authenticate or change active database on the persistent connection (single-connection mode only).
+   *
+   * @param options - New user or database options
+   */
+  public async changeUser(options: ConnectionOptions): Promise<void> {
+    await this.connectionManager.changeUser(options);
+  }
+
+  /**
+   * Reset session state on the persistent connection (single-connection mode only).
+   */
+  public async reset(): Promise<void> {
+    await this.connectionManager.reset();
+  }
+
+  /**
+   * Subscribe to connection pool lifecycle events.
+   */
+  public override on(event: 'connection', listener: (connection: PoolConnection) => void): this;
+  public override on(event: 'acquire', listener: (connection: PoolConnection) => void): this;
+  public override on(event: 'release', listener: (connection: PoolConnection) => void): this;
+  public override on(event: 'enqueue', listener: () => void): this;
+  public override on(event: string | symbol, listener: (...args: any[]) => void): this;
+  public override on(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+
+  /**
+   * Subscribe once to connection pool lifecycle events.
+   */
+  public override once(event: 'connection', listener: (connection: PoolConnection) => void): this;
+  public override once(event: 'acquire', listener: (connection: PoolConnection) => void): this;
+  public override once(event: 'release', listener: (connection: PoolConnection) => void): this;
+  public override once(event: 'enqueue', listener: () => void): this;
+  public override once(event: string | symbol, listener: (...args: any[]) => void): this;
+  public override once(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.once(event, listener);
   }
 
   /**

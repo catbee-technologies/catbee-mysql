@@ -1064,6 +1064,12 @@ describe('SqlClient', () => {
       expect(compiled.parameters).toEqual([5]);
     });
 
+    it('does not treat double dash without trailing whitespace as line comment', () => {
+      const compiled = compileNamedParameters('SELECT --foo, :id AS id', { id: 5 });
+      expect(compiled.sql).toBe('SELECT --foo, ? AS id');
+      expect(compiled.parameters).toEqual([5]);
+    });
+
     it('correctly handles strings ending with escaped backslashes', () => {
       const compiled = compileNamedParameters(
         'SELECT * FROM files WHERE dir = \'C:\\\\\' AND user_id = :id AND ext = "foo\\\\" AND active = :active',
@@ -1746,6 +1752,592 @@ describe('SqlClient', () => {
           await expect(locked.query('SELECT 2')).rejects.toThrow('Pinned connection has been closed or terminated.');
         })
       ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('Helpers, Configuration, and Driver Escape Hatches', () => {
+    it('safely escapes values and identifiers using instance and static helpers', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      // Escape values
+      expect(client.escape("O'Reilly")).toBe("'O\\'Reilly'");
+      expect(SqlClient.escape("O'Reilly")).toBe("'O\\'Reilly'");
+      expect(client.escape(123)).toBe('123');
+
+      // Escape identifiers
+      expect(client.escapeId('user_table')).toBe('`user_table`');
+      expect(SqlClient.escapeId('user_table')).toBe('`user_table`');
+      expect(client.escapeId(['col_a', 'col_b'])).toBe('`col_a`, `col_b`');
+      expect(SqlClient.escapeId(['col_a', 'col_b'])).toBe('`col_a`, `col_b`');
+
+      // Format SQL
+      expect(client.format('SELECT * FROM ?? WHERE id = ?', ['users', 42])).toBe('SELECT * FROM `users` WHERE id = 42');
+      expect(SqlClient.format('SELECT * FROM ?? WHERE id = ?', ['users', 42])).toBe(
+        'SELECT * FROM `users` WHERE id = 42'
+      );
+    });
+
+    it('throws error when getPool() is called in single connection mode', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const singleClient = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      expect(() => singleClient.getPool()).toThrow(
+        'getPool() is only available when SqlClient is configured in pool mode (e.g. via SqlClient.createPool()).'
+      );
+    });
+
+    it('formats unquoted SQL expressions using raw and rawSql helpers', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      expect(client.format('UPDATE users SET updated_at = ? WHERE id = ?', [client.rawSql('NOW()'), 1])).toBe(
+        'UPDATE users SET updated_at = NOW() WHERE id = 1'
+      );
+
+      expect(SqlClient.format('SELECT ? AS today', [SqlClient.raw('CURRENT_DATE()')])).toBe(
+        'SELECT CURRENT_DATE() AS today'
+      );
+    });
+
+    it('immediately destroys connection and pool via destroy()', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      client.destroy();
+      expect(primaryConnection.destroy).toHaveBeenCalledTimes(1);
+
+      const mockPool = createMockPool();
+      mockedCreatePool.mockReturnValue(mockPool as unknown as Pool);
+
+      const poolClient = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost'
+      });
+      poolClient.getPool();
+
+      poolClient.destroy();
+      expect(mockPool.destroy).toHaveBeenCalledTimes(1);
+    });
+
+    it('unprepares cached statements on primary connection', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      client.unprepare('SELECT 1');
+      expect(primaryConnection.unprepare).toHaveBeenCalledWith('SELECT 1');
+    });
+
+    it('supports changeUser and reset on single connection mode and rejects in pool mode', async () => {
+      const primaryConnection = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(primaryConnection as unknown as Connection);
+
+      const singleClient = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      await singleClient.changeUser({ user: 'admin', database: 'other_db' });
+      expect(primaryConnection.changeUser).toHaveBeenCalledWith({ user: 'admin', database: 'other_db' });
+
+      await singleClient.reset();
+      expect(primaryConnection.reset).toHaveBeenCalledTimes(1);
+
+      const mockPool = createMockPool();
+      mockedCreatePool.mockReturnValue(mockPool as unknown as Pool);
+
+      const poolClient = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      await expect(poolClient.changeUser({ user: 'admin' })).rejects.toThrow(
+        /changeUser\(\) cannot be invoked directly on a pooled SqlClient/
+      );
+      await expect(poolClient.reset()).rejects.toThrow(/reset\(\) cannot be invoked directly on a pooled SqlClient/);
+    });
+
+    it('forwards pool lifecycle events from underlying pool to SqlClient', () => {
+      const mockPool = createMockPool();
+      let connectionHandler: ((...args: unknown[]) => void) | undefined;
+      let acquireHandler: ((...args: unknown[]) => void) | undefined;
+      let releaseHandler: ((...args: unknown[]) => void) | undefined;
+      let enqueueHandler: ((...args: unknown[]) => void) | undefined;
+
+      mockPool.on.mockImplementation((event: string, handler: (...args: unknown[]) => void) => {
+        if (event === 'connection') connectionHandler = handler;
+        if (event === 'acquire') acquireHandler = handler;
+        if (event === 'release') releaseHandler = handler;
+        if (event === 'enqueue') enqueueHandler = handler;
+        return mockPool as unknown as Pool;
+      });
+
+      mockedCreatePool.mockReturnValue(mockPool as unknown as Pool);
+
+      const poolClient = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost'
+      });
+      poolClient.getPool();
+
+      const onConnection = jest.fn();
+      const onAcquire = jest.fn();
+      const onRelease = jest.fn();
+      const onEnqueue = jest.fn();
+
+      poolClient.on('connection', onConnection);
+      poolClient.on('acquire', onAcquire);
+      poolClient.on('release', onRelease);
+      poolClient.on('enqueue', onEnqueue);
+
+      const dummyConn = {} as PoolConnection;
+      connectionHandler?.(dummyConn);
+      acquireHandler?.(dummyConn);
+      releaseHandler?.(dummyConn);
+      enqueueHandler?.();
+
+      expect(onConnection).toHaveBeenCalledWith(dummyConn);
+      expect(onAcquire).toHaveBeenCalledWith(dummyConn);
+      expect(onRelease).toHaveBeenCalledWith(dummyConn);
+      expect(onEnqueue).toHaveBeenCalledTimes(1);
+    });
+
+    it('acquires and releases connection on pool and single connection clients', async () => {
+      const mockConn = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const singleClient = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      const singleConn = await singleClient.getConnection();
+      expect(singleConn).toBeDefined();
+      singleClient.releaseConnection(singleConn);
+
+      const mockPool = createMockPool();
+      mockPool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(mockPool as unknown as Pool);
+
+      const poolClient = SqlClient.createPool({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      const poolConn = await poolClient.getConnection();
+      expect(poolConn).toBeDefined();
+      mockConn.release = jest.fn();
+      poolClient.releaseConnection(poolConn);
+      expect(mockConn.release).toHaveBeenCalled();
+    });
+
+    it('calls reset on single connection client', async () => {
+      const mockConn = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const singleClient = await SqlClient.create({
+        database: 'test',
+        host: 'localhost'
+      });
+
+      await singleClient.reset();
+      expect(mockConn.reset).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('TransactionClient Savepoints & Lifecycle', () => {
+    it('creates savepoints with generated and custom names, rolls back, and releases them', async () => {
+      const mockConn = createMockConnection();
+      const tx = new TransactionClient(mockConn as unknown as Connection);
+
+      const generatedName = await tx.savepoint();
+      expect(generatedName).toBe('sp_1');
+      expect(mockConn.query).toHaveBeenCalledWith('SAVEPOINT `sp_1`');
+
+      const customName = await tx.savepoint('step_alpha');
+      expect(customName).toBe('step_alpha');
+      expect(mockConn.query).toHaveBeenCalledWith('SAVEPOINT `step_alpha`');
+
+      await tx.rollbackTo('step_alpha');
+      expect(mockConn.query).toHaveBeenCalledWith('ROLLBACK TO SAVEPOINT `step_alpha`');
+
+      await tx.releaseSavepoint('step_alpha');
+      expect(mockConn.query).toHaveBeenCalledWith('RELEASE SAVEPOINT `step_alpha`');
+
+      await tx.rollback();
+      expect(mockConn.rollback).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects invalid savepoint names', async () => {
+      const mockConn = createMockConnection();
+      const tx = new TransactionClient(mockConn as unknown as Connection);
+
+      await expect(tx.savepoint('123_invalid')).rejects.toThrow('Invalid savepoint name: "123_invalid"');
+      await expect(tx.rollbackTo('invalid-dash')).rejects.toThrow('Invalid savepoint name: "invalid-dash"');
+      await expect(tx.releaseSavepoint('invalid space')).rejects.toThrow('Invalid savepoint name: "invalid space"');
+    });
+  });
+
+  describe('Advisory Locks & Timeout/Cancellation Edge Cases', () => {
+    it('executes callback inside advisory lock and pins connection client', async () => {
+      const mockConn = createMockConnection();
+      mockConn.query.mockImplementation(async (sql: string | { sql: string }) => {
+        const queryStr = typeof sql === 'string' ? sql : sql.sql;
+        if (queryStr.includes('GET_LOCK')) {
+          return [[{ lockAcquired: 1 }] as RowDataPacket[], []];
+        }
+        if (queryStr.includes('RELEASE_LOCK')) {
+          return [[{ released: 1 }] as RowDataPacket[], []];
+        }
+        return [[{ val: 1 }] as RowDataPacket[], []];
+      });
+
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+
+      const result = await client.withAdvisoryLock('test_lock', 10, async lockedClient => {
+        // Locked connection client operations
+        await lockedClient.close(); // No-op
+        lockedClient.destroy(); // No-op
+        await expect(lockedClient.reset()).rejects.toThrow(/advisory lock/i);
+        await expect(lockedClient.changeUser({})).rejects.toThrow(/advisory lock/i);
+
+        return 'success';
+      });
+
+      expect(result).toBe('success');
+    });
+
+    it('validates advisory lock arguments and throws if lock acquisition fails', async () => {
+      const mockConn = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+
+      await expect(client.withAdvisoryLock('', 10, async () => {})).rejects.toThrow(
+        /Lock name must be a non-empty string/
+      );
+      await expect(client.withAdvisoryLock('a'.repeat(65), 10, async () => {})).rejects.toThrow(
+        /Lock name must be a non-empty string/
+      );
+      await expect(client.withAdvisoryLock('valid', -1, async () => {})).rejects.toThrow(
+        /Lock timeout must be a non-negative integer/
+      );
+
+      mockConn.query.mockResolvedValueOnce([[{ lockAcquired: 0 }] as RowDataPacket[], []]);
+      await expect(client.withAdvisoryLock('failed_lock', 5, async () => {})).rejects.toThrow(
+        'Failed to acquire advisory lock "failed_lock" within 5s'
+      );
+    });
+
+    it('terminates connection when advisory lock release fails', async () => {
+      const mockConn = createMockConnection();
+      mockConn.query.mockImplementation(async (sql: string | { sql: string }) => {
+        const queryStr = typeof sql === 'string' ? sql : sql.sql;
+        if (queryStr.includes('GET_LOCK')) {
+          return [[{ lockAcquired: 1 }] as RowDataPacket[], []];
+        }
+        if (queryStr.includes('RELEASE_LOCK')) {
+          return [[{ released: 0 }] as RowDataPacket[], []];
+        }
+        return [[{ val: 1 }] as RowDataPacket[], []];
+      });
+
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+
+      await expect(client.withAdvisoryLock('failing_release', 5, async () => 'done')).rejects.toThrow(
+        /Failed to release advisory lock/
+      );
+      expect(mockConn.destroy).toHaveBeenCalled();
+    });
+
+    it('cleans up connection when startTransaction fails', async () => {
+      const mockConn = createMockConnection();
+      mockConn.beginTransaction.mockRejectedValue(new Error('Tx start failed'));
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+      await expect(client.startTransaction()).rejects.toThrow('Tx start failed');
+      expect(mockConn.end).toHaveBeenCalled();
+    });
+
+    it('throws AbortError when signal is already aborted', async () => {
+      const mockConn = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(client.query('SELECT 1', [], { signal: controller.signal })).rejects.toThrow('Query was aborted');
+    });
+
+    it('times out and invokes cancellation when query exceeds timeoutMs', async () => {
+      const mockConn = createMockConnection();
+      mockConn.query.mockImplementation(() => new Promise(() => {})); // Hangs
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+      await expect(client.query('SELECT 1', [], { timeoutMs: 10 })).rejects.toThrow('Query timed out after 10ms');
+    });
+
+    it('covers execute, delete, executeNamed, destroy, and config on single connection client', async () => {
+      const mockConn = createMockConnection();
+      mockConn.execute.mockResolvedValue([{ affectedRows: 1, insertId: 0 } as ResultSetHeader, []]);
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test_db', host: 'localhost', user: 'root' });
+
+      // config
+      expect(client.config.database).toBe('test_db');
+
+      // execute
+      const res = await client.execute('UPDATE users SET active = ? WHERE id = ?', [true, 1]);
+      expect(res.result.affectedRows).toBe(1);
+
+      // delete
+      const delCount = await client.delete('DELETE FROM users WHERE id = ?', [1]);
+      expect(delCount).toBe(1);
+
+      // executeNamed with options
+      const namedRes = await client.executeNamed(
+        'UPDATE users SET name = :name WHERE id = :id',
+        { name: 'Alice', id: 1 },
+        { idempotent: true }
+      );
+      expect(namedRes.result.affectedRows).toBe(1);
+
+      // destroy
+      client.destroy();
+      expect(mockConn.destroy).toHaveBeenCalled();
+    });
+
+    it('throws when advisory lock returns empty rows array', async () => {
+      const mockConn = createMockConnection();
+      mockConn.query.mockResolvedValue([[] as RowDataPacket[], []]);
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+      await expect(client.withAdvisoryLock('empty_row_lock', 5, async () => {})).rejects.toThrow(
+        'Failed to acquire advisory lock "empty_row_lock" within 5s'
+      );
+    });
+
+    it('handles query resolution and rejection branches with timeoutMs and signal', async () => {
+      const mockConn = createMockConnection();
+      mockConn.query.mockResolvedValue([[{ num: 1 }] as RowDataPacket[], []]);
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+
+      // 1. Success with timeoutMs
+      const r1 = await client.query('SELECT 1', [], { timeoutMs: 5000 });
+      expect(r1.rows).toHaveLength(1);
+
+      // 2. Success with signal
+      const c1 = new AbortController();
+      const r2 = await client.query('SELECT 1', [], { signal: c1.signal });
+      expect(r2.rows).toHaveLength(1);
+
+      // 3. Error with timeoutMs
+      mockConn.query.mockRejectedValueOnce(new Error('Syntax error'));
+      await expect(client.query('INVALID SQL', [], { timeoutMs: 5000 })).rejects.toThrow('Syntax error');
+
+      // 4. Error with signal
+      mockConn.query.mockRejectedValueOnce(new Error('Syntax error'));
+      const c2 = new AbortController();
+      await expect(client.query('INVALID SQL', [], { signal: c2.signal })).rejects.toThrow('Syntax error');
+    });
+
+    it('cancels queries and executions in pooled mode when aborted', async () => {
+      const mockPool = createMockPool();
+      const mockConn = createMockConnection();
+      mockPool.getConnection.mockResolvedValue(mockConn as unknown as PoolConnection);
+      mockedCreatePool.mockReturnValue(mockPool as unknown as Pool);
+
+      const poolClient = SqlClient.createPool({ database: 'test', host: 'localhost' });
+
+      // query cancellation in pooled mode: trigger abort while query is in-flight
+      const queryController = new AbortController();
+      mockConn.query.mockImplementationOnce(() => {
+        queryController.abort();
+        return new Promise(() => {});
+      });
+      const qPromise = poolClient.query('SELECT SLEEP(1)', [], { signal: queryController.signal });
+      await expect(qPromise).rejects.toThrow('Query was aborted');
+      expect(mockConn.destroy).toHaveBeenCalled();
+
+      // execute cancellation in pooled mode: trigger abort while execute is in-flight
+      const execController = new AbortController();
+      mockConn.execute.mockImplementationOnce(() => {
+        execController.abort();
+        return new Promise(() => {});
+      });
+      const ePromise = poolClient.execute('UPDATE users SET name = ?', ['X'], { signal: execController.signal });
+      await expect(ePromise).rejects.toThrow('Query was aborted');
+    });
+
+    it('handles convenience methods (insert, update, exists, count, ping, get, all)', async () => {
+      const mockConn = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+
+      // insert
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 2, insertId: 10 } as ResultSetHeader, []]);
+      expect(await client.insert('INSERT INTO users(name) VALUES(?)', ['Alice'])).toBe(2);
+
+      // update affectedRows and changedRows
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 3, changedRows: 1 } as unknown as ResultSetHeader, []]);
+      expect(await client.update('UPDATE users SET name = ?', ['Bob'], false)).toBe(3);
+
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 3, changedRows: 1 } as unknown as ResultSetHeader, []]);
+      expect(await client.update('UPDATE users SET name = ?', ['Bob'], true)).toBe(1);
+
+      // exists
+      mockConn.query.mockResolvedValueOnce([[{ id: 1 }] as RowDataPacket[], []]);
+      expect(await client.exists('SELECT 1 FROM users WHERE id = ?', [1])).toBe(true);
+
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+      expect(await client.exists('SELECT 1 FROM users WHERE id = ?', [999])).toBe(false);
+
+      // count
+      mockConn.query.mockResolvedValueOnce([[{ total: 42 }] as RowDataPacket[], []]);
+      expect(await client.count('SELECT COUNT(*) AS total FROM users')).toBe(42);
+
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+      expect(await client.count('SELECT COUNT(*) AS total FROM users WHERE 1 = 0')).toBe(0);
+
+      // ping
+      mockConn.query.mockResolvedValueOnce([[{ '1': 1 }] as RowDataPacket[], []]);
+      expect(await client.ping()).toBe(true);
+
+      mockConn.query.mockRejectedValueOnce(new Error('Connection dead'));
+      expect(await client.ping()).toBe(false);
+
+      // get & all
+      mockConn.query.mockResolvedValueOnce([[{ id: 1, name: 'Alice' }] as RowDataPacket[], []]);
+      expect(await client.get('SELECT * FROM users WHERE id = ?', [1])).toEqual({ id: 1, name: 'Alice' });
+
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+      expect(await client.get('SELECT * FROM users WHERE id = ?', [999])).toBeNull();
+
+      mockConn.query.mockResolvedValueOnce([[{ id: 1 }, { id: 2 }] as RowDataPacket[], []]);
+      expect(await client.all('SELECT * FROM users')).toEqual([{ id: 1 }, { id: 2 }]);
+    });
+
+    it('covers all TransactionClient convenience and named query methods', async () => {
+      const mockConn = createMockConnection();
+      const tx = new TransactionClient(mockConn as unknown as Connection);
+
+      // insert
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 1, insertId: 5 } as ResultSetHeader, []]);
+      expect(await tx.insert('INSERT INTO users VALUES(?)', ['X'])).toBe(1);
+
+      // update
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 4, changedRows: 2 } as unknown as ResultSetHeader, []]);
+      expect(await tx.update('UPDATE users SET x = 1', [], false)).toBe(4);
+
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 4, changedRows: 2 } as unknown as ResultSetHeader, []]);
+      expect(await tx.update('UPDATE users SET x = 1', [], true)).toBe(2);
+
+      // delete
+      mockConn.execute.mockResolvedValueOnce([{ affectedRows: 3 } as ResultSetHeader, []]);
+      expect(await tx.delete('DELETE FROM users')).toBe(3);
+
+      // exists
+      mockConn.query.mockResolvedValueOnce([[{ id: 1 }] as RowDataPacket[], []]);
+      expect(await tx.exists('SELECT 1')).toBe(true);
+
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+      expect(await tx.exists('SELECT 1')).toBe(false);
+
+      // count
+      mockConn.query.mockResolvedValueOnce([[{ count: '10' }] as RowDataPacket[], []]);
+      expect(await tx.count('SELECT COUNT(*)')).toBe(10);
+
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+      expect(await tx.count('SELECT COUNT(*)')).toBe(0);
+
+      // get & all
+      mockConn.query.mockResolvedValueOnce([[{ id: 7 }] as RowDataPacket[], []]);
+      expect(await tx.get('SELECT * FROM users WHERE id = 7')).toEqual({ id: 7 });
+
+      mockConn.query.mockResolvedValueOnce([[] as RowDataPacket[], []]);
+      expect(await tx.get('SELECT * FROM users WHERE id = 999')).toBeNull();
+
+      mockConn.query.mockResolvedValueOnce([[{ id: 1 }] as RowDataPacket[], []]);
+      expect(await tx.all('SELECT * FROM users')).toEqual([{ id: 1 }]);
+
+      // commit
+      await tx.commit();
+      expect(mockConn.commit).toHaveBeenCalled();
+    });
+
+    it('automatically retries query on retryable protocol errors', async () => {
+      const mockConn = createMockConnection();
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({
+        database: 'test',
+        host: 'localhost',
+        retry: { maxRetries: 2, initialDelayMs: 1, maxDelayMs: 5 }
+      });
+
+      const retryableError = Object.assign(new Error('Connection lost'), { code: 'PROTOCOL_CONNECTION_LOST' });
+      mockConn.query
+        .mockRejectedValueOnce(retryableError)
+        .mockResolvedValueOnce([[{ success: 1 }] as RowDataPacket[], []]);
+
+      const res = await client.query('SELECT 1');
+      expect(res.rows[0].success).toBe(1);
+      expect(res.attempt).toBe(1);
+    });
+
+    it('handles rollback failure when transaction callback throws', async () => {
+      const mockConn = createMockConnection();
+      mockConn.beginTransaction.mockResolvedValue(undefined);
+      mockConn.rollback.mockRejectedValue(new Error('Rollback failed'));
+      mockedCreateConnection.mockResolvedValue(mockConn as unknown as Connection);
+
+      const client = await SqlClient.create({ database: 'test', host: 'localhost' });
+
+      let caughtError: (Error & { rollbackError?: Error }) | undefined;
+      try {
+        await client.transaction(async () => {
+          throw new Error('Callback business logic error');
+        });
+      } catch (err) {
+        caughtError = err as Error & { rollbackError?: Error };
+      }
+
+      expect(caughtError?.message).toBe('Callback business logic error');
+      expect(caughtError?.rollbackError?.message).toBe('Rollback failed');
     });
   });
 });

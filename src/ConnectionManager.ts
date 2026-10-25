@@ -1,5 +1,6 @@
+import type { EventEmitter } from 'node:events';
 import type { ConnectionOptions, ExecuteValues, QueryValues } from 'mysql2';
-import { createConnection, createPool, type Connection, type Pool } from 'mysql2/promise';
+import { createConnection, createPool, type Connection, type Pool, type PoolConnection } from 'mysql2/promise';
 import type { PoolOptions, QueryResult_, QueryRows, SqlParameters } from './types';
 import { has2DArrayParameter } from './SqlParameterValidation';
 
@@ -33,6 +34,9 @@ export class ConnectionManager {
 
   /** MySQL connection options */
   private readonly options: ConnectionOptions;
+
+  /** Event emitter for forwarding pool lifecycle events */
+  private eventEmitter?: EventEmitter;
 
   /**
    * Create a new ConnectionManager.
@@ -230,6 +234,29 @@ export class ConnectionManager {
   }
 
   /**
+   * Set the event emitter to receive forwarded pool lifecycle events.
+   *
+   * @param emitter - The EventEmitter (typically the SqlClient instance)
+   */
+  public setEventEmitter(emitter: EventEmitter): void {
+    this.eventEmitter = emitter;
+    if (this.pool) {
+      this.attachPoolEvents(this.pool);
+    }
+  }
+
+  private attachPoolEvents(pool: Pool): void {
+    if (!this.eventEmitter) {
+      return;
+    }
+    const emitter = this.eventEmitter;
+    pool.on('connection', (...args: unknown[]) => emitter.emit('connection', ...args));
+    pool.on('acquire', (...args: unknown[]) => emitter.emit('acquire', ...args));
+    pool.on('release', (...args: unknown[]) => emitter.emit('release', ...args));
+    pool.on('enqueue', (...args: unknown[]) => emitter.emit('enqueue', ...args));
+  }
+
+  /**
    * Lazily create and return the pool.
    *
    * @returns Active mysql2 pool instance
@@ -237,6 +264,7 @@ export class ConnectionManager {
   private ensurePool(): Pool {
     if (!this.pool) {
       this.pool = createPool(this.options as PoolOptions);
+      this.attachPoolEvents(this.pool);
     }
 
     return this.pool;
@@ -315,6 +343,58 @@ export class ConnectionManager {
   }
 
   /**
+   * Return the underlying mysql2 Pool instance when in pool mode.
+   *
+   * @returns Active mysql2 Promise Pool instance
+   * @throws Error if client is in single-connection mode
+   */
+  public getPool(): Pool {
+    if (!this.isPooled) {
+      throw new Error(
+        'getPool() is only available when SqlClient is configured in pool mode (e.g. via SqlClient.createPool()).'
+      );
+    }
+    return this.ensurePool();
+  }
+
+  /**
+   * Acquire a direct connection.
+   *
+   * In pool mode, acquires a connection from the pool that should be released
+   * using `connection.release()` or `releaseConnection(connection)`.
+   * In single-connection mode, returns the primary connection.
+   *
+   * @returns Connection or PoolConnection instance
+   */
+  public async getConnection(): Promise<PoolConnection | Connection> {
+    if (this.isPooled) {
+      return this.ensurePool().getConnection();
+    }
+    return this.getPrimaryConnection();
+  }
+
+  /**
+   * Release an acquired connection back to the pool.
+   *
+   * @param connection - Connection previously acquired via `getConnection()`
+   */
+  public releaseConnection(connection: PoolConnection | Connection): void {
+    const maybePooled = connection as { release?: () => void };
+    if (typeof maybePooled.release === 'function') {
+      maybePooled.release();
+    }
+  }
+
+  /**
+   * Get the connection options configured on this manager.
+   *
+   * @returns Readonly connection options
+   */
+  public getOptions(): Readonly<ConnectionOptions> {
+    return this.options;
+  }
+
+  /**
    * Close the connection or connection pool.
    *
    * In single-connection mode, closes the persistent connection.
@@ -346,6 +426,67 @@ export class ConnectionManager {
       this.pool = undefined;
       return;
     }
+  }
+
+  /**
+   * Immediately destroy the connection or connection pool without waiting for in-flight queries.
+   */
+  public destroy(): void {
+    if (this.primaryConnection) {
+      const connection = this.primaryConnection;
+      this.primaryConnection = undefined;
+      this.terminateConnection(connection);
+    }
+
+    if (this.pool) {
+      const pool = this.pool;
+      this.pool = undefined;
+      const destroyable = pool as unknown as { destroy?: () => void };
+      if (typeof destroyable.destroy === 'function') {
+        destroyable.destroy();
+      } else {
+        pool.end().catch(() => {});
+      }
+    }
+  }
+
+  /**
+   * Deallocate a prepared statement on the persistent connection.
+   *
+   * @param sql - The SQL query string or options previously prepared
+   */
+  public unprepare(sql: string): void {
+    if (this.primaryConnection) {
+      this.primaryConnection.unprepare(sql);
+    }
+  }
+
+  /**
+   * Re-authenticate or change active database on the persistent connection.
+   *
+   * @param options - New user or database options
+   */
+  public async changeUser(options: ConnectionOptions): Promise<void> {
+    if (this.isPooled) {
+      throw new Error(
+        'changeUser() cannot be invoked directly on a pooled SqlClient as it would affect only an arbitrary pooled connection. Use client.getConnection() to acquire a dedicated connection, or create a new pool with the target credentials.'
+      );
+    }
+    const connection = await this.getPrimaryConnection();
+    await connection.changeUser(options);
+  }
+
+  /**
+   * Reset session state on the persistent connection.
+   */
+  public async reset(): Promise<void> {
+    if (this.isPooled) {
+      throw new Error(
+        'reset() cannot be invoked directly on a pooled SqlClient. Use client.getConnection() to acquire and reset a dedicated connection.'
+      );
+    }
+    const connection = await this.getPrimaryConnection();
+    await connection.reset();
   }
 
   /**

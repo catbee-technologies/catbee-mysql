@@ -1,4 +1,12 @@
-import type { ConnectionOptions, QueryResult, ResultSetHeader, RowDataPacket } from 'mysql2';
+import type {
+  ConnectionOptions,
+  QueryResult,
+  ResultSetHeader,
+  RowDataPacket,
+  Raw,
+  SqlValue as DriverSqlValue
+} from 'mysql2';
+import type { Connection, Pool, PoolConnection } from 'mysql2/promise';
 
 /**
  * Primitive SQL scalar parameter value.
@@ -605,4 +613,106 @@ export interface SqlClientBase {
    * Close the connection or connection pool.
    */
   close(): Promise<void>;
+
+  /**
+   * Explicit resource management support (`await using db = ...`).
+   * Automatically calls `close()` when exiting the block scope.
+   */
+  [Symbol.asyncDispose](): Promise<void>;
+
+  /**
+   * Connection or pool configuration options.
+   */
+  readonly config: Readonly<SqlClientOptions | PoolOptions>;
+
+  /**
+   * Safely format a SQL query by replacing `?` with escaped values and `??` with escaped identifiers.
+   *
+   * @param sql - SQL query template
+   * @param values - Values to interpolate into the template
+   * @returns Formatted SQL query string
+   */
+  format(sql: string, values?: DriverSqlValue | DriverSqlValue[]): string;
+
+  /**
+   * Escape an arbitrary value for safe inclusion in a SQL statement.
+   *
+   * @param value - Value to escape
+   * @returns Escaped SQL string
+   */
+  escape(value: DriverSqlValue): string;
+
+  /**
+   * Escape an identifier (column name, table name, or array of names).
+   *
+   * @param value - Identifier name or array of identifier names
+   * @returns Escaped identifier string
+   */
+  escapeId(value: DriverSqlValue): string;
+
+  /**
+   * Get the underlying mysql2 Pool instance when operating in connection pool mode.
+   *
+   * @returns Underlying mysql2 Promise Pool instance
+   * @throws Error if client is in single-connection mode
+   */
+  getPool(): Pool;
+
+  /**
+   * Acquire a direct connection.
+   *
+   * When in pool mode, acquires a connection from the pool that must be released
+   * via `connection.release()` or `client.releaseConnection(connection)`.
+   * When in single connection mode, returns the primary connection.
+   *
+   * @returns Direct connection object
+   */
+  getConnection(): Promise<PoolConnection | Connection>;
+
+  /**
+   * Release an acquired connection back to the pool.
+   *
+   * @param connection - Connection previously acquired via `getConnection()`
+   */
+  releaseConnection(connection: PoolConnection | Connection): void;
+
+  /**
+   * Immediately destroy the active connection or connection pool without waiting for in-flight queries.
+   */
+  destroy(): void;
+
+  /**
+   * Deallocate a prepared statement.
+   *
+   * @param sql - The SQL query string or options previously prepared
+   */
+  unprepare(sql: string): void;
+
+  /**
+   * Re-authenticate or change active database on the persistent connection (single-connection mode only).
+   *
+   * @param options - New user or database options
+   */
+  changeUser(options: ConnectionOptions): Promise<void>;
+
+  /**
+   * Reset session state on the persistent connection (single-connection mode only).
+   */
+  reset(): Promise<void>;
+
+  /**
+   * Return a raw SQL expression that bypasses quoting and escaping in `format()`.
+   *
+   * @param sql - Raw SQL string
+   */
+  rawSql(sql: string): Raw;
+
+  /**
+   * Subscribe to connection pool lifecycle events.
+   */
+  on(event: 'connection', listener: (connection: PoolConnection) => void): this;
+  on(event: 'acquire', listener: (connection: PoolConnection) => void): this;
+  on(event: 'release', listener: (connection: PoolConnection) => void): this;
+  on(event: 'enqueue', listener: () => void): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this;
 }

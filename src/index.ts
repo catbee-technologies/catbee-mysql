@@ -60,3 +60,9 @@ export {
   type SchemaInitializer,
   type SchemaInitOption
 } from './UpgradeManager';
+
+// Escaping and formatting helpers
+export { escape, escapeId, format, raw, type SqlValue as DriverSqlValue, type Raw } from 'mysql2';
+
+// Underlying mysql2 driver types
+export type { Connection, Pool, PoolConnection } from 'mysql2/promise';

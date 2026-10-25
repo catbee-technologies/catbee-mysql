@@ -1492,5 +1492,28 @@ describe('UpgradeManager Unit Tests', () => {
         expect.stringContaining('Successfully bootstrapped database schema to version 1')
       );
     });
+
+    it('throws error when bootstrap is called without schemaInit configured', async () => {
+      const manager = new UpgradeManager(client, {});
+      await expect(manager.bootstrap()).rejects.toThrow('Cannot bootstrap database: no schema initializer configured');
+    });
+
+    it('downgrades migrations cleanly to target version including unnamed steps', async () => {
+      currentDbVersion = 2;
+      const downMock2 = jest.fn().mockResolvedValue(undefined);
+      const downMock1 = jest.fn().mockResolvedValue(undefined);
+
+      const manager = new UpgradeManager(client, {
+        migrations: [
+          { version: 1, up: jest.fn(), down: downMock1 },
+          { version: 2, name: 'step2', up: jest.fn(), down: downMock2 }
+        ]
+      });
+
+      const res = await manager.downgrade(0);
+      expect(res.currentVersion).toBe(0);
+      expect(downMock2).toHaveBeenCalledTimes(1);
+      expect(downMock1).toHaveBeenCalledTimes(1);
+    });
   });
 });
